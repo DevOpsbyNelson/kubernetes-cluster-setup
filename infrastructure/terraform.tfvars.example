@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and adjust as needed. These values apply to every workspace;
+# per-stage differences go in the `stages` map (keyed by workspace name).
+aws_region   = "us-east-1"
+project_name = "eks-cluster"
+
+# Who may reach the public Kubernetes API endpoint. Restrict this to your office/VPN ranges.
+# public_access_cidrs = ["203.0.113.0/24"]
+
+# IAM principals that get cluster-admin, in addition to whoever creates the cluster.
+# Do not list the creator here: it already has an access entry and EKS would reject a second one.
+# cluster_admin_principal_arns = ["arn:aws:iam::123456789012:role/platform-admins"]
