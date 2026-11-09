@@ -1,0 +1,189 @@
+name: Create Deploy Role
+
+# Manually creates (or updates/destroys) the ECR repository for service/ and the IAM role that
+# GitHub Actions assumes through OIDC to push the image there. Runs with the bootstrap role from the AWS_BOOTSTRAP_ROLE_ARN secret of the "aws-bootstrap"
+# environment. Nothing account-specific is hardcoded: the account comes from that role.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      github_repository:
+        description: Repository allowed to push images, as owner/repo (empty = this repository)
+        type: string
+        default: ""
+      role_name:
+        description: Name of the ECR push role to create
+        type: string
+        default: github-actions-ecr-push
+      ecr_repository_name:
+        description: ECR repository to create for the service/ image
+        type: string
+        default: eks-cluster/service
+      project_name:
+        description: project_name of infrastructure/ (used for the state bucket name and the Project tag)
+        type: string
+        default: eks-cluster
+      state_bucket:
+        description: Terraform state bucket (empty = <project_name>-tfstate-<account id>); created if missing
+        type: string
+        default: ""
+      immutable_subject:
+        description: The repository uses GitHub's immutable OIDC subject (owner@id/repo@id)
+        type: boolean
+        default: true
+      create_oidc_provider:
+        description: Create the GitHub OIDC provider (leave off if the account already has one)
+        type: boolean
+        default: false
+      aws_region:
+        description: AWS region
+        type: string
+        default: us-east-1
+
+permissions: {}
+
+jobs:
+  role:
+    name: ${{ inputs.action }} deploy role
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # allows the OIDC step below to request a short-lived token
+    # Holds AWS_BOOTSTRAP_ROLE_ARN; protect it with required reviewers and the main branch only.
+    environment: aws-bootstrap
+    concurrency:
+      group: create-deploy-role
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: aws_role
+    env:
+      ACTION: ${{ inputs.action }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      PROJECT_NAME: ${{ inputs.project_name }}
+      STATE_BUCKET_INPUT: ${{ inputs.state_bucket }}
+      STATE_KEY: aws-role/terraform.tfstate
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_github_repository: ${{ inputs.github_repository || github.repository }}
+      TF_VAR_role_name: ${{ inputs.role_name }}
+      TF_VAR_ecr_repository_name: ${{ inputs.ecr_repository_name }}
+      TF_VAR_project_name: ${{ inputs.project_name }}
+      TF_VAR_create_oidc_provider: ${{ inputs.create_oidc_provider }}
+      TF_VAR_aws_region: ${{ inputs.aws_region }}
+      # One role for every GitHub environment that may push the image.
+      TF_VAR_github_environments: '["development","staging","production"]'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.15.6"
+          terraform_wrapper: false # outputs are read with `terraform output -raw`
+
+      # Immutable subjects identify the repository by numeric IDs, read from GitHub at run time.
+      - name: Resolve repository IDs
+        if: inputs.immutable_subject
+        run: |
+          if [ "$TF_VAR_github_repository" = "$CURRENT_REPOSITORY" ]; then
+            OWNER_ID="$CURRENT_OWNER_ID"
+            REPO_ID="$CURRENT_REPO_ID"
+          elif ! read -r OWNER_ID REPO_ID < <(gh api "repos/$TF_VAR_github_repository" --jq '"\(.owner.id) \(.id)"'); then
+            echo "::error::Cannot read $TF_VAR_github_repository with this workflow's token. Run create_role.yml from that repository or make it readable."
+            exit 1
+          fi
+          {
+            echo "TF_VAR_github_repository_owner_id=$OWNER_ID"
+            echo "TF_VAR_github_repository_id=$REPO_ID"
+          } >> "$GITHUB_ENV"
+          echo "Subject: repo:${TF_VAR_github_repository%%/*}@$OWNER_ID/${TF_VAR_github_repository#*/}@$REPO_ID:environment:<name>"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          CURRENT_OWNER_ID: ${{ github.repository_owner_id }}
+          CURRENT_REPO_ID: ${{ github.repository_id }}
+
+      - name: Configure AWS credentials (OIDC, bootstrap role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BOOTSTRAP_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Resolve state bucket
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          STATE_BUCKET="${STATE_BUCKET_INPUT:-$PROJECT_NAME-tfstate-$ACCOUNT_ID}"
+          {
+            echo "ACCOUNT_ID=$ACCOUNT_ID"
+            echo "STATE_BUCKET=$STATE_BUCKET"
+          } >> "$GITHUB_ENV"
+          echo "Account: $ACCOUNT_ID  State bucket: $STATE_BUCKET"
+
+      # Same settings as infrastructure/scripts/bootstrap-state-bucket.sh; safe to re-run.
+      - name: Ensure state bucket exists
+        if: env.ACTION != 'destroy'
+        run: |
+          if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "State bucket $STATE_BUCKET already exists."
+          else
+            echo "Creating state bucket $STATE_BUCKET..."
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$STATE_BUCKET" >/dev/null
+            else
+              aws s3api create-bucket --bucket "$STATE_BUCKET" --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
+            fi
+          fi
+          aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" --versioning-configuration Status=Enabled
+          aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
+            --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
+            --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Terraform ${{ inputs.action }}
+        run: |
+          case "$ACTION" in
+            plan)    terraform plan -input=false ;;
+            apply)   terraform plan -input=false -out=tfplan && terraform apply -input=false tfplan ;;
+            destroy) terraform destroy -input=false -auto-approve ;;
+          esac
+
+      # Everything needed to finish the setup in GitHub; none of these values are secret.
+      - name: Next steps
+        if: env.ACTION == 'apply'
+        run: |
+          ROLE_ARN="$(terraform output -raw role_arn)"
+          ECR_REPOSITORY_URL="$(terraform output -raw ecr_repository_url)"
+          {
+            echo "## ECR push role ready"
+            echo
+            echo "**Repository secret** (Settings → Secrets and variables → Actions), shared by all stages:"
+            echo
+            echo "| Secret | Value |"
+            echo "|---|---|"
+            echo "| \`AWS_DEPLOY_ROLE_ARN\` | \`$ROLE_ARN\` |"
+            echo
+            echo "**Push target** for the image built from \`service/\`:"
+            echo
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| ECR repository | \`$ECR_REPOSITORY_URL\` |"
+            echo "| AWS region | \`$AWS_REGION\` |"
+            echo
+            echo "The pushing job must set \`environment:\` to \`development\`, \`staging\` or \`production\`, and tags must be unique (for example the commit SHA)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf .terraform tfplan
