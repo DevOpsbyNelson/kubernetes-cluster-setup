@@ -22,7 +22,7 @@ Publishing the image and creating the cluster are separate steps. Nothing deploy
 ## Getting started
 
 1. **Create the ECR repository and role.** Follow the one-time setup in [`aws_role/README.md`](aws_role/README.md#one-time-setup-in-a-new-aws-account), then run **Create Deploy Role**.
-2. **Publish the image.** Push a change under `service/` to `main`, or run **Publish Service Image** by hand.
+2. **Publish the image.** Push a change under `service/` to `dev`, `staging` or `main`, or run **Publish Service Image** by hand on one of those branches.
 3. **Create a cluster.** Follow [`infrastructure/README.md`](infrastructure/README.md). For example, from `infrastructure/`:
 
    ```bash
@@ -39,7 +39,7 @@ You need Terraform 1.10 or later, the AWS CLI v2, `kubectl`, and AWS credentials
 | Workflow | Runs | What it does |
 |---|---|---|
 | **Create Deploy Role** ([`create_role.yml`](.github/workflows/create_role.yml)) | By hand | Runs `plan`, `apply` or `destroy` on `aws_role/` |
-| **Publish Service Image** ([`publish_image.yml`](.github/workflows/publish_image.yml)) | On pushes to `main` that change `service/`, or by hand | Builds `service/` and pushes it to ECR, tagged with the commit SHA |
+| **Publish Service Image** ([`publish_image.yml`](.github/workflows/publish_image.yml)) | On pushes to `dev`, `staging` or `main` that change `service/`, or by hand | Builds `service/` and pushes it to ECR, tagged with the commit SHA |
 
 Both workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. They need these settings:
 
@@ -48,7 +48,15 @@ Both workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub.
 | `AWS_BOOTSTRAP_ROLE_ARN` | Variable | `aws-bootstrap` environment | Create Deploy Role |
 | `AWS_DEPLOY_ROLE_ARN` | Secret | Repository | Publish Service Image |
 
-Publish Service Image runs in the `production` environment. Image tags in ECR can't be overwritten, so if a commit is already published, the job skips the build.
+Publish Service Image picks the GitHub environment from the branch:
+
+| Branch | Environment |
+|---|---|
+| `dev` | `development` |
+| `staging` | `staging` |
+| `main` | `production` |
+
+All stages share one ECR repository, and the image is the same in each: settings are passed when the container starts. A commit is built once, and image tags can't be overwritten, so if a commit is already published, the job skips the build and reuses that image. To promote the same image, fast-forward the next branch to that commit. A merge commit or squash creates a new SHA and a new build.
 
 ## Service
 

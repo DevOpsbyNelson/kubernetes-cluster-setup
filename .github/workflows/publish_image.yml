@@ -2,9 +2,11 @@ name: Publish Service Image
 
 # Builds the image from service/ and pushes it to the private ECR repository created by
 # create_role.yml, tagged with the commit SHA. Assumes the role in AWS_DEPLOY_ROLE_ARN through OIDC.
+# Branches map to environments: dev -> development, staging -> staging, main -> production.
+# A commit is built once; when it reaches the next branch, the existing image is reused.
 on:
   push:
-    branches: [main]
+    branches: [dev, staging, main]
     paths:
       - service/**
       - .github/workflows/publish_image.yml
@@ -15,16 +17,17 @@ permissions: {}
 jobs:
   publish:
     name: Build and push image
-    # A manual run can be started from any branch; only main may publish.
-    if: github.ref == 'refs/heads/main'
+    # A manual run can be started from any branch; only the stage branches may publish.
+    if: contains(fromJSON('["refs/heads/dev","refs/heads/staging","refs/heads/main"]'), github.ref)
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # allows the OIDC step below to request a short-lived token
     # The role's trust policy only accepts jobs that run in a listed GitHub environment.
-    environment: production
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
+    # Per commit: if the same commit lands on two branches at once, the second run finds the image.
     concurrency:
-      group: publish-service-image
+      group: publish-service-image-${{ github.sha }}
       cancel-in-progress: false
     env:
       AWS_REGION: us-east-1
@@ -45,7 +48,8 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      # Tags are immutable, so pushing a commit twice (e.g. re-running this job) would fail.
+      # Tags are immutable, so pushing a commit twice (a re-run, or promotion to the next branch)
+      # would fail. Skipping the build also keeps the same image across stages.
       - name: Check whether this commit is already published
         id: existing
         run: |

@@ -16,7 +16,9 @@ Nothing in this folder is specific to one AWS account: the account comes from th
 
 ## Pushing the image
 
-`.github/workflows/publish_image.yml` builds `service/` and pushes it as `<ecr_repository_url>:<commit SHA>`. It runs on every push to `main` that changes `service/`, or by hand from **Actions → Publish Service Image**. If the image for a commit already exists, it skips the build, because tags can't be overwritten.
+`.github/workflows/publish_image.yml` builds `service/` and pushes it as `<ecr_repository_url>:<commit SHA>`. It runs on pushes to `dev`, `staging` or `main` that change `service/`, or by hand from **Actions → Publish Service Image** on one of those branches. The branches map to the `development`, `staging` and `production` environments.
+
+A commit is built once. If its image already exists, the job skips the build and reuses that image, because tags can't be overwritten. To promote the same image, fast-forward the next branch to that commit. A merge commit or squash creates a new SHA and a new build.
 
 Any other workflow that pushes to this repository must:
 
