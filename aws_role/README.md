@@ -16,7 +16,9 @@ Nothing in this folder is specific to one AWS account: the account comes from th
 
 ## Pushing the image
 
-This folder only creates the role and the repository. The workflow that builds `service/` and pushes the image is separate and is not in this repository yet. That job must:
+`.github/workflows/publish_image.yml` builds `service/` and pushes it as `<ecr_repository_url>:<commit SHA>`. It runs on every push to `main` that changes `service/`, or by hand from **Actions → Publish Service Image**. If the image for a commit already exists, it skips the build, because tags can't be overwritten.
+
+Any other workflow that pushes to this repository must:
 
 - set `environment:` to `development`, `staging` or `production`, otherwise AWS rejects the OIDC token;
 - grant `permissions: id-token: write`;

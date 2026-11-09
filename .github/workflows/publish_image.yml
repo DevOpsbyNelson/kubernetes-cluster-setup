@@ -1,0 +1,96 @@
+name: Publish Service Image
+
+# Builds the image from service/ and pushes it to the private ECR repository created by
+# create_role.yml, tagged with the commit SHA. Assumes the role in AWS_DEPLOY_ROLE_ARN through OIDC.
+on:
+  push:
+    branches: [main]
+    paths:
+      - service/**
+      - .github/workflows/publish_image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Build and push image
+    # A manual run can be started from any branch; only main may publish.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # allows the OIDC step below to request a short-lived token
+    # The role's trust policy only accepts jobs that run in a listed GitHub environment.
+    environment: production
+    concurrency:
+      group: publish-service-image
+      cancel-in-progress: false
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPOSITORY: eks-cluster/service
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC, ECR push role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # Tags are immutable, so pushing a commit twice (e.g. re-running this job) would fail.
+      - name: Check whether this commit is already published
+        id: existing
+        run: |
+          COUNT="$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$IMAGE_TAG" \
+            --query 'length(images)' \
+            --output text)"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image tag $IMAGE_TAG already exists; skipping the build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.existing.outputs.exists == 'false'
+
+      - name: Build and push
+        id: build
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: service
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Without this, attestations show up as extra untagged entries in ECR.
+          provenance: false
+
+      - name: Summary
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ALREADY_PUBLISHED: ${{ steps.existing.outputs.exists }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## Service image"
+            echo
+            echo "\`$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\`"
+            echo
+            if [ "$ALREADY_PUBLISHED" = "true" ]; then
+              echo "This commit was already published, so nothing was pushed."
+            else
+              echo "Digest: \`$DIGEST\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
