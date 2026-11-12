@@ -1,0 +1,72 @@
+name: Tests
+
+# Checks that need no AWS credentials: Terraform tests (mocked provider), the cleanup script that
+# runs before a destroy (fake aws/kubectl), and rendering the Kubernetes manifests.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: terraform test (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - aws_role
+          - infrastructure
+          - infrastructure/modules/vpc
+          - infrastructure/modules/eks
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.15.6"
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - name: Init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: Test
+        run: terraform test
+
+  scripts:
+    name: Cleanup before destroy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test delete-k8s-resources.sh and the destroy order
+        run: bash infrastructure/tests/delete-k8s-resources.test.sh
+
+  manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # kubectl is preinstalled on GitHub's Ubuntu runners.
+      - name: Render each environment
+        run: |
+          for env in development staging production; do
+            kubectl kustomize "cluster/overlays/$env" > /dev/null
+            echo "$env renders"
+          done

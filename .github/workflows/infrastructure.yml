@@ -131,6 +131,17 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 3600
 
+      # Kubernetes creates AWS resources that Terraform doesn't track: load balancers for
+      # LoadBalancer Services and Ingresses, and EBS volumes for PersistentVolumeClaims. Left behind,
+      # load balancers block deleting the subnets and VPC (DependencyViolation), and volumes keep
+      # billing. The script deletes them first: through Kubernetes while the cluster runs (the
+      # infrastructure role created it, so it is a cluster admin), then by their tags through the
+      # AWS API, which also covers a cluster that is already gone.
+      # Tested by infrastructure/tests/delete-k8s-resources.test.sh.
+      - name: Delete AWS resources created by Kubernetes
+        if: env.ACTION == 'destroy'
+        run: ./scripts/delete-k8s-resources.sh
+
       - name: Terraform ${{ inputs.action }}
         run: |
           case "$ACTION" in

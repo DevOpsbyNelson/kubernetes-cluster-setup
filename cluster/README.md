@@ -112,7 +112,7 @@ kubectl kustomize cluster/overlays/production
 
 ## Limits
 
-- **Before destroying a cluster, delete its load balancer:** run `kubectl -n service delete service service-public` and wait a minute. Kubernetes created it, so Terraform doesn't know about it: it would keep using the subnets, and the Infrastructure `destroy` would fail with `DependencyViolation`.
+- **Kubernetes creates AWS resources that Terraform doesn't track:** the load balancer for `service-public` and the EBS volumes behind each PersistentVolumeClaim. The Infrastructure workflow's `destroy` deletes them first with [`delete-k8s-resources.sh`](../infrastructure/scripts/delete-k8s-resources.sh), even if the cluster is already gone. If you destroy a cluster another way, run that script first, with `ENVIRONMENT=<stage>`, or the load balancer blocks deleting the VPC and the volumes keep billing.
 
 - Loki keeps logs until its volume is full: its stock config sets no retention. Tempo keeps traces for 25 days (`observability/tempo/tempo.yaml`), and Prometheus keeps metrics for 15 days.
 - Deleting a manifest doesn't delete the object from the cluster: `kubectl apply` doesn't prune. Delete it by hand.

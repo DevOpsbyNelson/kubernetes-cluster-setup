@@ -5,6 +5,7 @@
 | **Create Deploy Role** | [`create_role.yml`](create_role.yml) | By hand | Creates the ECR repositories and the IAM roles the other workflows use ([`aws_role/`](../../aws_role/)) |
 | **Infrastructure** | [`infrastructure.yml`](infrastructure.yml) | By hand, from `main` | Creates, changes or destroys one environment's VPC and EKS cluster ([`infrastructure/`](../../infrastructure/)) |
 | **Publish and Deploy** | [`publish_and_deploy.yml`](publish_and_deploy.yml) | On push, or by hand | Builds and pushes the images, then deploys [`cluster/`](../../cluster/) to the branch's cluster |
+| **Tests** | [`tests.yml`](tests.yml) | On every push and pull request | Terraform tests, the cleanup script tests and the manifest render. Needs no AWS credentials. |
 
 All of them sign in to AWS through OIDC, so no AWS keys are stored in GitHub.
 
@@ -88,7 +89,7 @@ gh workflow run infrastructure.yml -f environment=development -f action=apply
 |---|---|---|
 | `environment` | `development` | Which cluster: `development`, `staging` or `production` |
 | `action` | `plan` | `plan`, `apply` or `destroy`. `apply` plans first and applies that plan. `destroy` has no preview. |
-| `disable_deletion_protection` | `false` | Turns off EKS deletion protection, which production has on |
+| `disable_deletion_protection` | `false` | Turns off EKS deletion protection for a stage that has it on. No stage has it on by default. |
 
 Cluster access is set on every run:
 - **The infrastructure role** creates the cluster, so EKS makes it an admin.
@@ -96,7 +97,7 @@ Cluster access is set on every run:
 
 To give someone access, add their ARN to the variable and run `apply` again.
 
-To destroy production, first run `apply` with `disable_deletion_protection` on, then run `destroy`.
+Before a `destroy`, the workflow runs [`delete-k8s-resources.sh`](../../infrastructure/scripts/delete-k8s-resources.sh), which deletes what Kubernetes created in AWS: load balancers (from `LoadBalancer` Services and Ingresses) and the EBS volumes behind PersistentVolumeClaims. Terraform doesn't track those, and a leftover load balancer blocks deleting the VPC. The script works in two passes: through Kubernetes while the cluster runs, then by their tags through the AWS API, which also cleans up after a cluster that is already gone. If a stage has deletion protection on, first run `apply` with `disable_deletion_protection`, then `destroy`.
 
 ## Publish and Deploy
 

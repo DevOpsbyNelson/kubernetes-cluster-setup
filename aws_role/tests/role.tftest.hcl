@@ -174,9 +174,22 @@ run "infrastructure_policy_is_scoped" {
     condition = alltrue([
       for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement :
       try(s.Condition.StringEquals["aws:RequestedRegion"], "") == "us-east-1"
-      if contains(["Network", "Eks", "SecretsKey"], s.Sid)
+      if contains(["Network", "Eks", "SecretsKey", "KubernetesLoadBalancers"], s.Sid)
     ])
-    error_message = "EC2, EKS and KMS permissions must be limited to the configured region."
+    error_message = "EC2, EKS, KMS and load balancer permissions must be limited to the configured region."
+  }
+
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement : s.Action if s.Sid == "KubernetesLoadBalancers"
+      ])) == toset([
+      "elasticloadbalancing:DeleteLoadBalancer",
+      "elasticloadbalancing:DeleteTargetGroup",
+      "elasticloadbalancing:DescribeLoadBalancers",
+      "elasticloadbalancing:DescribeTags",
+      "elasticloadbalancing:DescribeTargetGroups",
+    ])
+    error_message = "Before a destroy, the infrastructure role must be able to find and delete the load balancers Kubernetes created, and nothing more."
   }
 }
 

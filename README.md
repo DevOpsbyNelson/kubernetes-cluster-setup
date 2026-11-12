@@ -41,6 +41,7 @@ Each cluster bills by the hour whether or not anything is deployed: roughly $120
 | **Create Deploy Role** ([`create_role.yml`](.github/workflows/create_role.yml)) | By hand | Runs `aws_role/`: ECR repositories and IAM roles |
 | **Infrastructure** ([`infrastructure.yml`](.github/workflows/infrastructure.yml)) | By hand, from `main` | Runs `infrastructure/` for one environment |
 | **Publish and Deploy** ([`publish_and_deploy.yml`](.github/workflows/publish_and_deploy.yml)) | On pushes to `dev`, `staging` or `main` that change `service/`, `observability/` or `cluster/`, or by hand | Builds the seven images, pushes the changed ones to ECR, and deploys `cluster/` |
+| **Tests** ([`tests.yml`](.github/workflows/tests.yml)) | On every push and pull request | Terraform tests, cleanup script tests and manifest render, without AWS credentials |
 
 All workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. Images are tagged with the Git tree hash of their folder: an image is rebuilt only when its folder changes, and promoting a commit to the next branch reuses its images. The [workflows README](.github/workflows/README.md) lists every secret and variable.
 
@@ -55,7 +56,7 @@ pnpm dev     # http://localhost:3000
 
 ## Tests
 
-The Terraform tests use a mocked AWS provider, so they need no credentials and create nothing. Run them from `aws_role/` or `infrastructure/`:
+The **Tests** workflow runs all of these on every push. The Terraform tests use a mocked AWS provider, so they need no credentials and create nothing. Run them from `aws_role/` or `infrastructure/`:
 
 ```bash
 terraform init -backend=false

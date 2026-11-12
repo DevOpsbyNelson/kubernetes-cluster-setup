@@ -175,6 +175,22 @@ resource "aws_iam_role_policy" "infrastructure" {
         Condition = local.region_condition
       },
       {
+        # Before a destroy, infrastructure/scripts/delete-k8s-resources.sh deletes the load balancers
+        # Kubernetes created for the cluster: Terraform doesn't track them, and they would block
+        # deleting the VPC. (Volumes and security groups are covered by ec2:* above.)
+        Sid    = "KubernetesLoadBalancers"
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:DescribeTags",
+          "elasticloadbalancing:DescribeTargetGroups",
+        ]
+        Resource  = "*"
+        Condition = local.region_condition
+      },
+      {
         # Manage the key that encrypts Kubernetes secrets, without using it to encrypt or decrypt.
         Sid    = "SecretsKey"
         Effect = "Allow"

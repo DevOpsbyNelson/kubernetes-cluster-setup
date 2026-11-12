@@ -37,7 +37,8 @@ infrastructure/
 │   ├── common.sh                  # shared helpers (+ loads .env)
 │   ├── bootstrap-state-bucket.sh  # creates the S3 bucket for Terraform state
 │   ├── terraform-init.sh          # terraform init with the S3 backend + selects workspace
-│   └── terraform-run.sh           # init, then any terraform command for ENVIRONMENT
+│   ├── terraform-run.sh           # init, then any terraform command for ENVIRONMENT
+│   └── delete-k8s-resources.sh    # before destroy: deletes load balancers and volumes Kubernetes created
 └── modules/
     ├── vpc/                  # VPC, subnets, NAT gateways, routes
     └── eks/                  # cluster, IAM, KMS, logs, node group, add-ons
