@@ -47,7 +47,13 @@ Each workload runs a single replica:
 - **`alloy`:** tail sampling needs every span of a trace on the same instance.
 - **The others:** they store data on a single volume.
 
-Nothing is exposed outside the cluster. Use `kubectl port-forward`, as shown below.
+Only the app is reachable from the internet, through the `service-public` Service in [service.yaml](base/service/service.yaml). AWS creates an internet-facing Network Load Balancer for it, about $16–18/month, and the deploy job summary shows its public URL. You can also look it up:
+
+```bash
+kubectl -n service get service service-public   # EXTERNAL-IP column: the load balancer's DNS name
+```
+
+That load balancer exposes only port 80 of the app. Metrics (9464) and the observability stack stay private: use `kubectl port-forward` for Grafana, as shown below. If you don't need a public URL, delete `service-public` and you stop paying for the load balancer.
 
 ## Differences between environments
 
@@ -105,6 +111,8 @@ kubectl kustomize cluster/overlays/production
 ```
 
 ## Limits
+
+- **Before destroying a cluster, delete its load balancer:** run `kubectl -n service delete service service-public` and wait a minute. Kubernetes created it, so Terraform doesn't know about it: it would keep using the subnets, and the Infrastructure `destroy` would fail with `DependencyViolation`.
 
 - Loki keeps logs until its volume is full: its stock config sets no retention. Tempo keeps traces for 25 days (`observability/tempo/tempo.yaml`), and Prometheus keeps metrics for 15 days.
 - Deleting a manifest doesn't delete the object from the cluster: `kubectl apply` doesn't prune. Delete it by hand.

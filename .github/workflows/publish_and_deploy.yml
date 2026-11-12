@@ -265,8 +265,21 @@ jobs:
       - name: Summary
         if: success() && steps.cluster.outputs.exists == 'true'
         run: |
+          # AWS takes a minute or two to create the load balancer and give it a DNS name.
+          HOST=""
+          for attempt in $(seq 1 30); do
+            HOST="$(kubectl -n service get service service-public -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+            [ -n "$HOST" ] && break
+            sleep 10
+          done
           {
             echo "## Deployed to eks-cluster-$STAGE"
+            echo
+            if [ -n "$HOST" ]; then
+              echo "**Public URL:** http://$HOST (the DNS name can take a few more minutes to resolve the first time)"
+            else
+              echo "**Public URL:** not ready yet. Check with \`kubectl -n service get service service-public\`."
+            fi
             echo
             echo '```bash'
             echo "aws eks update-kubeconfig --region $AWS_REGION --name eks-cluster-$STAGE"

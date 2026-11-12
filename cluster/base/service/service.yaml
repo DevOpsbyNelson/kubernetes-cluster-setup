@@ -81,3 +81,25 @@ spec:
     - name: metrics
       port: 9464
       targetPort: metrics
+---
+# Public entry point. AWS creates an internet-facing Network Load Balancer for it, in the public
+# subnets tagged kubernetes.io/role/elb, and gives it a public DNS name (see the deploy job summary).
+# Only the app's port is exposed: metrics (9464) stay on the internal "service" Service above.
+# The load balancer is billed by the hour (about $16-18/month) for as long as this Service exists.
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-public
+  namespace: service
+  labels:
+    app.kubernetes.io/name: service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
