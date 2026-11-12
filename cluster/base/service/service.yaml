@@ -42,7 +42,7 @@ spec:
               value: http://alloy.observability.svc.cluster.local:4318
           resources:
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 128Mi
             # Above ServiceHighMemory's 512 MiB, so the alert fires before the container is killed.
             limits:

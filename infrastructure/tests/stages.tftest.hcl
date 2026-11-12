@@ -104,26 +104,50 @@ run "production" {
     error_message = "The cluster must be named after project and stage."
   }
 
+  # This is a practice project: production is sized for cost, not for availability.
   assert {
-    condition     = module.vpc.nat_gateway_count == 3 && length(module.vpc.private_subnet_ids) == 3
-    error_message = "production must survive a zone failure: 3 zones, a NAT gateway in each."
+    condition     = module.vpc.nat_gateway_count == 1 && length(module.vpc.private_subnet_ids) == 2
+    error_message = "production must use the cheap network: 2 zones, 1 NAT gateway."
   }
 
   assert {
-    condition     = module.eks.deletion_protection
-    error_message = "The production cluster must be protected from deletion."
+    condition = (
+      local.stage_config.node_capacity_type == "SPOT" &&
+      local.stage_config.node_desired_size == 1 &&
+      local.stage_config.support_type == "STANDARD"
+    )
+    error_message = "production must run on a single Spot node with standard EKS support."
   }
 
   assert {
-    condition     = local.stage_config.node_capacity_type == "ON_DEMAND" && local.stage_config.node_min_size >= 3
-    error_message = "production must run on at least 3 on-demand nodes."
+    condition     = !module.eks.deletion_protection
+    error_message = "The practice production cluster must be easy to delete."
   }
 }
 
 run "override_unlocks_production" {
+  # A stage with protection on, to check that the override still turns it off. Test variables
+  # can't read the configuration's defaults, so the stage is written out in full.
   variables {
     stage                       = "production"
     disable_deletion_protection = true
+    stages = {
+      production = {
+        kubernetes_version  = "1.37"
+        support_type        = "STANDARD"
+        vpc_cidr            = "10.30.0.0/16"
+        az_count            = 2
+        single_nat_gateway  = true
+        node_instance_types = ["t3.medium"]
+        node_capacity_type  = "SPOT"
+        node_min_size       = 1
+        node_desired_size   = 1
+        node_max_size       = 2
+        node_disk_size_gib  = 20
+        log_retention_days  = 7
+        deletion_protection = true
+      }
+    }
   }
 
   assert {

@@ -32,7 +32,7 @@ infrastructure/ ──▶ Infrastructure workflow ──▶ VPC + EKS cluster pe
 3. **Publish and deploy.** Push to `dev`, `staging` or `main`, or run **Publish and Deploy** on one of those branches.
 4. **Open Grafana.** Port-forward to the cluster, as described in [`cluster/README.md`](cluster/README.md#connect).
 
-Each cluster bills by the hour whether or not anything is deployed: roughly $140/month for development and $800/month for all three. To stop paying for an environment, run Infrastructure with `action = destroy` for it.
+Each cluster bills by the hour whether or not anything is deployed: roughly $120/month for production and $140/month for development, mostly the EKS control plane and the NAT gateway. To stop paying for an environment, run Infrastructure with `action = destroy` for it.
 
 ## GitHub Actions
 

@@ -91,20 +91,22 @@ variable "stages" {
       log_retention_days  = 14
       deletion_protection = false
     }
+    # Sized for a practice project: the smallest setup that runs the service and the observability
+    # stack, at the lowest cost. One Spot node fits every pod in cluster/; there is no zone redundancy.
     production = {
       kubernetes_version  = "1.37"
-      support_type        = "EXTENDED"
+      support_type        = "STANDARD"
       vpc_cidr            = "10.30.0.0/16"
-      az_count            = 3
-      single_nat_gateway  = false
-      node_instance_types = ["m6i.large"]
-      node_capacity_type  = "ON_DEMAND"
-      node_min_size       = 3
-      node_desired_size   = 3
-      node_max_size       = 6
-      node_disk_size_gib  = 50
-      log_retention_days  = 90
-      deletion_protection = true
+      az_count            = 2    # EKS needs subnets in at least 2 zones
+      single_nat_gateway  = true # one NAT gateway instead of one per zone
+      node_instance_types = ["t3.medium", "t3a.medium"]
+      node_capacity_type  = "SPOT"
+      node_min_size       = 1
+      node_desired_size   = 1
+      node_max_size       = 2
+      node_disk_size_gib  = 20
+      log_retention_days  = 7
+      deletion_protection = false
     }
   }
 }

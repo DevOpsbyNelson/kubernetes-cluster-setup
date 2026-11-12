@@ -36,10 +36,10 @@ spec:
               value: http://prometheus:9090/api/v1/write
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              memory: 2Gi
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /ready

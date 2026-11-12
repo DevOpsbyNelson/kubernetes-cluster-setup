@@ -90,6 +90,34 @@ jobs:
             exit 1
           fi
 
+          # EKS access entries only take IAM user or role ARNs. Check them here, so a bad value fails
+          # now with a clear message instead of after the cluster is built. The values are masked in
+          # the logs, so the messages describe each problem instead of showing the value.
+          problem() {
+            case "$1" in
+              arn:aws:sts::*) echo "is an STS session ARN (assumed-role/...); use the IAM role ARN arn:aws:iam::<account>:role/<name>" ;;
+              arn:aws:iam::*:root) echo "is the root account, which EKS doesn't accept; use an IAM user or role" ;;
+              *'"'* | *"'"* | *'['* | *']'*) echo "contains quotes or brackets; use the plain ARN" ;;
+              *) echo "is not an IAM user or role ARN (arn:aws:iam::<12-digit account>:user/<name> or :role/<name>)" ;;
+            esac
+          }
+          arn_pattern='^arn:aws:iam::[0-9]{12}:(user|role)/[A-Za-z0-9+=,.@_/-]+$'
+          invalid=()
+          [[ "$EKS_DEPLOY_ROLE_ARN" =~ $arn_pattern ]] || invalid+=("AWS_EKS_DEPLOY_ROLE_ARN $(problem "$EKS_DEPLOY_ROLE_ARN")")
+          IFS=',' read -r -a extra_admins <<< "$EXTRA_ADMINS"
+          position=0
+          for arn in "${extra_admins[@]}"; do
+            arn="${arn#"${arn%%[![:space:]]*}"}" # trim leading spaces
+            arn="${arn%"${arn##*[![:space:]]}"}" # trim trailing spaces
+            [ -n "$arn" ] || continue
+            position=$((position + 1))
+            [[ "$arn" =~ $arn_pattern ]] || invalid+=("EKS_ADMIN_PRINCIPAL_ARNS entry $position $(problem "$arn")")
+          done
+          if [ "${#invalid[@]}" -gt 0 ]; then
+            printf '::error::%s\n' "${invalid[@]}"
+            exit 1
+          fi
+
           ADMINS="$(jq -cn --arg deploy "$EKS_DEPLOY_ROLE_ARN" --arg extra "$EXTRA_ADMINS" --arg infra "$INFRA_ROLE_ARN" '
             [$deploy] + ($extra | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))
             | map(select(. != $infra)) | unique')"

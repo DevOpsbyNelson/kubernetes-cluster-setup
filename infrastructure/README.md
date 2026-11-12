@@ -128,16 +128,18 @@ Set in `var.stages` (`variables.tf`). Override them in a `terraform.tfvars` file
 
 | | development | staging | production |
 |---|---|---|---|
-| Availability zones | 2 | 2 | 3 |
-| NAT gateways | 1 | 1 | 1 per zone |
+| Availability zones | 2 | 2 | 2 |
+| NAT gateways | 1 | 1 | 1 |
 | VPC range | `10.10.0.0/16` | `10.20.0.0/16` | `10.30.0.0/16` |
-| Instance types | `t3.medium`, `t3a.medium` | `t3.large` | `m6i.large` |
-| Capacity | Spot | On-Demand | On-Demand |
-| Nodes (min / desired / max) | 1 / 2 / 3 | 2 / 2 / 4 | 3 / 3 / 6 |
-| Node disk | 20 GiB | 30 GiB | 50 GiB |
-| Control plane log retention | 7 days | 14 days | 90 days |
-| EKS support policy | Standard | Standard | Extended |
-| Deletion protection | off | off | on |
+| Instance types | `t3.medium`, `t3a.medium` | `t3.large` | `t3.medium`, `t3a.medium` |
+| Capacity | Spot | On-Demand | Spot |
+| Nodes (min / desired / max) | 1 / 2 / 3 | 2 / 2 / 4 | 1 / 1 / 2 |
+| Node disk | 20 GiB | 30 GiB | 20 GiB |
+| Control plane log retention | 7 days | 14 days | 7 days |
+| EKS support policy | Standard | Standard | Standard |
+| Deletion protection | off | off | off |
+
+This repository is for practice, so production is sized for cost rather than availability: one Spot node in two zones, with a single NAT gateway. It costs roughly $120 a month, most of it the EKS control plane ($73) and the NAT gateway (about $33). For a real production workload, use several On-Demand nodes across three zones with a NAT gateway in each, and turn deletion protection on.
 
 Resources are named `<project_name>-<stage>`. The `default` workspace isn't a stage: plan and apply stop there with an error.
 
@@ -148,7 +150,7 @@ Resources are named `<project_name>-<stage>`. The `default` workspace isn't a st
 - **Kubernetes upgrades**: raise `kubernetes_version` one minor version at a time, development first. Nodes and add-ons follow in the same apply.
 - **Support policy**: `STANDARD` clusters are upgraded automatically by AWS when standard support ends. `EXTENDED` clusters stay on the version for longer, at a higher hourly price.
 - **Pod access to AWS**: use EKS Pod Identity, as the EBS CSI driver does. The nodes' IMDS hop limit is 2, so pods can also reach the node role's credentials; lower it in `modules/eks/nodes.tf` if your workloads don't need instance metadata.
-- **Storage**: the EBS CSI driver is installed, but this code creates no `StorageClass` for it. Add a gp3 one before using PersistentVolumes.
+- **Storage**: the EBS CSI driver is installed, but this code creates no `StorageClass` for it. [`cluster/`](../cluster/) adds a default gp3 one.
 - **Costs**: the control plane, NAT gateways and nodes are billed per hour, even when idle. Destroy stages you don't use.
 
 ## Tests
