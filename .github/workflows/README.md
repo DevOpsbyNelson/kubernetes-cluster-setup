@@ -34,9 +34,9 @@ push to dev / staging / main ──▶ Publish and Deploy ──▶ images in EC
 | Name | Type | Value | Used by |
 |---|---|---|---|
 | `AWS_DEPLOY_ROLE_ARN` | Secret | `role_arn` from Create Deploy Role | Publish and Deploy (publish) |
-| `AWS_INFRA_ROLE_ARN` | Variable | `infrastructure_role_arn` | Infrastructure |
-| `AWS_EKS_DEPLOY_ROLE_ARN` | Variable | `eks_deploy_role_arn` | Infrastructure, Publish and Deploy (deploy) |
-| `EKS_ADMIN_PRINCIPAL_ARNS` | Variable | Comma-separated IAM user or role ARNs that get cluster-admin. Optional. | Infrastructure |
+| `AWS_INFRA_ROLE_ARN` | Secret | `infrastructure_role_arn` | Infrastructure |
+| `AWS_EKS_DEPLOY_ROLE_ARN` | Secret | `eks_deploy_role_arn` | Infrastructure, Publish and Deploy (deploy) |
+| `EKS_ADMIN_PRINCIPAL_ARNS` | Secret | Comma-separated IAM user or role ARNs that get cluster-admin. Optional. | Infrastructure |
 
 In the `aws-bootstrap` environment, set the variable `AWS_BOOTSTRAP_ROLE_ARN` to the bootstrap role's ARN. Create Deploy Role uses it.
 

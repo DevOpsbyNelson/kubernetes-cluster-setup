@@ -124,17 +124,17 @@ jobs:
 
       - name: Check settings
         env:
-          EKS_DEPLOY_ROLE_ARN: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+          EKS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_EKS_DEPLOY_ROLE_ARN }}
         run: |
           if [ -z "$EKS_DEPLOY_ROLE_ARN" ]; then
-            echo "::error::Set the AWS_EKS_DEPLOY_ROLE_ARN repository variable (from the Create Deploy Role job summary)."
+            echo "::error::Set the AWS_EKS_DEPLOY_ROLE_ARN repository secret (from the Create Deploy Role job summary)."
             exit 1
           fi
 
       - name: Configure AWS credentials (OIDC, EKS deploy role)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_EKS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # The clusters are created separately (Infrastructure workflow); until then there is nothing

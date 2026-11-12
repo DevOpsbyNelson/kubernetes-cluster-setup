@@ -109,8 +109,8 @@ State keys inside the bucket:
 
 Outputs:
 - `role_arn`: the value for the `AWS_DEPLOY_ROLE_ARN` repository secret.
-- `infrastructure_role_arn`: the value for the `AWS_INFRA_ROLE_ARN` repository variable.
-- `eks_deploy_role_arn`: the value for the `AWS_EKS_DEPLOY_ROLE_ARN` repository variable.
+- `infrastructure_role_arn`: the value for the `AWS_INFRA_ROLE_ARN` repository secret.
+- `eks_deploy_role_arn`: the value for the `AWS_EKS_DEPLOY_ROLE_ARN` repository secret.
 - `ecr_registry` and `ecr_repository_urls`: where images are pushed.
 - `role_name`, `oidc_provider_arn`, `allowed_subjects`.
 
@@ -154,7 +154,7 @@ Get the IDs with `gh api repos/<owner>/<repo> --jq '.owner.id, .id'`.
 5. **GitHub:** run **Create Deploy Role** with `action = plan`, check the plan, then run it again with `action = apply`.
 6. **GitHub:** copy the values from the job summary into repository settings:
    - secret `AWS_DEPLOY_ROLE_ARN`;
-   - variables `AWS_INFRA_ROLE_ARN` and `AWS_EKS_DEPLOY_ROLE_ARN`.
+   - secrets `AWS_INFRA_ROLE_ARN` and `AWS_EKS_DEPLOY_ROLE_ARN`.
 
 The rest of the setup, such as creating the clusters and adding the environment secrets, is in the [workflows README](../.github/workflows/README.md).
 

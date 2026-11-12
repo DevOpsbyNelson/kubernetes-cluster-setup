@@ -179,8 +179,8 @@ jobs:
             echo "| Name | Type | Value |"
             echo "|---|---|---|"
             echo "| \`AWS_DEPLOY_ROLE_ARN\` | Secret | \`$ROLE_ARN\` |"
-            echo "| \`AWS_INFRA_ROLE_ARN\` | Variable | \`$INFRA_ROLE_ARN\` |"
-            echo "| \`AWS_EKS_DEPLOY_ROLE_ARN\` | Variable | \`$EKS_DEPLOY_ROLE_ARN\` |"
+            echo "| \`AWS_INFRA_ROLE_ARN\` | Secret | \`$INFRA_ROLE_ARN\` |"
+            echo "| \`AWS_EKS_DEPLOY_ROLE_ARN\` | Secret | \`$EKS_DEPLOY_ROLE_ARN\` |"
             echo
             echo "Images are pushed to \`$ECR_REGISTRY/$TF_VAR_ecr_namespace/<name>\` in \`$AWS_REGION\`."
             echo

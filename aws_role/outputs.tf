@@ -9,12 +9,12 @@ output "role_name" {
 }
 
 output "infrastructure_role_arn" {
-  description = "Terraform role for infrastructure/. Set this as the AWS_INFRA_ROLE_ARN repository variable in GitHub."
+  description = "Terraform role for infrastructure/. Set this as the AWS_INFRA_ROLE_ARN repository secret in GitHub."
   value       = aws_iam_role.infrastructure.arn
 }
 
 output "eks_deploy_role_arn" {
-  description = "EKS deploy role. Set this as the AWS_EKS_DEPLOY_ROLE_ARN repository variable in GitHub."
+  description = "EKS deploy role. Set this as the AWS_EKS_DEPLOY_ROLE_ARN repository secret in GitHub."
   value       = aws_iam_role.eks_deploy.arn
 }
 

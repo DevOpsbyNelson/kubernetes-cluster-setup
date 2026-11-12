@@ -86,7 +86,7 @@ For GitHub sign-in, create a GitHub OAuth app with the callback URL `http://loca
 
 ## Connect
 
-You need the AWS CLI, `kubectl`, and an IAM principal listed in the `EKS_ADMIN_PRINCIPAL_ARNS` repository variable. The [Infrastructure](../.github/workflows/infrastructure.yml) workflow turns that list into cluster access.
+You need the AWS CLI, `kubectl`, and an IAM principal listed in the `EKS_ADMIN_PRINCIPAL_ARNS` repository secret. The [Infrastructure](../.github/workflows/infrastructure.yml) workflow turns that list into cluster access.
 
 ```bash
 aws eks update-kubeconfig --region us-east-1 --name eks-cluster-development

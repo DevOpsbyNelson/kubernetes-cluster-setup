@@ -1,7 +1,7 @@
 name: Infrastructure
 
 # Runs Terraform in infrastructure/ for one environment: each has its own VPC and EKS cluster
-# (eks-cluster-<environment>). Assumes the role in the AWS_INFRA_ROLE_ARN variable through OIDC,
+# (eks-cluster-<environment>). Assumes the role in the AWS_INFRA_ROLE_ARN secret through OIDC,
 # and reads the Terraform state settings from the environment's REMOTE_STORAGE_* secrets.
 on:
   workflow_dispatch:
@@ -75,13 +75,13 @@ jobs:
       # infrastructure role is left out: it creates the cluster, so EKS already makes it an admin.
       - name: Check settings
         env:
-          INFRA_ROLE_ARN: ${{ vars.AWS_INFRA_ROLE_ARN }}
-          EKS_DEPLOY_ROLE_ARN: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
-          EXTRA_ADMINS: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS }}
+          INFRA_ROLE_ARN: ${{ secrets.AWS_INFRA_ROLE_ARN }}
+          EKS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_EKS_DEPLOY_ROLE_ARN }}
+          EXTRA_ADMINS: ${{ secrets.EKS_ADMIN_PRINCIPAL_ARNS }}
         run: |
           missing=()
-          [ -n "$INFRA_ROLE_ARN" ] || missing+=("AWS_INFRA_ROLE_ARN (repository variable)")
-          [ -n "$EKS_DEPLOY_ROLE_ARN" ] || missing+=("AWS_EKS_DEPLOY_ROLE_ARN (repository variable)")
+          [ -n "$INFRA_ROLE_ARN" ] || missing+=("AWS_INFRA_ROLE_ARN (repository secret)")
+          [ -n "$EKS_DEPLOY_ROLE_ARN" ] || missing+=("AWS_EKS_DEPLOY_ROLE_ARN (repository secret)")
           [ -n "$DEV_REMOTE_STORAGE_AWS_S3_BUCKET" ] || missing+=("REMOTE_STORAGE_AWS_S3_BUCKET (secret in $ENVIRONMENT)")
           [ -n "$DEV_REMOTE_STORAGE_AWS_REGION" ] || missing+=("REMOTE_STORAGE_AWS_REGION (secret in $ENVIRONMENT)")
           [ -n "$DEV_REMOTE_STORAGE_AWS_S3_KEY" ] || missing+=("REMOTE_STORAGE_AWS_S3_KEY (secret in $ENVIRONMENT)")
@@ -99,7 +99,7 @@ jobs:
       - name: Configure AWS credentials (OIDC, infrastructure role)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.AWS_INFRA_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_INFRA_ROLE_ARN }}
           aws-region: us-east-1
           role-duration-seconds: 3600
 
