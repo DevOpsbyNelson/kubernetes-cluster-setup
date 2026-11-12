@@ -1,0 +1,132 @@
+name: Infrastructure
+
+# Runs Terraform in infrastructure/ for one environment: each has its own VPC and EKS cluster
+# (eks-cluster-<environment>). Assumes the role in the AWS_INFRA_ROLE_ARN variable through OIDC,
+# and reads the Terraform state settings from the environment's REMOTE_STORAGE_* secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment (cluster) to plan or change
+        type: choice
+        options: [development, staging, production]
+        default: development
+      action:
+        description: Terraform action
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      disable_deletion_protection:
+        description: Turn off the cluster's deletion protection (apply this once before destroying production)
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} ${{ inputs.environment }}
+    # Infrastructure only changes from the reviewed code on main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Creating a cluster with its node group and add-ons takes about 20 minutes.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # allows the OIDC step below to request a short-lived token
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: infrastructure-${{ inputs.environment }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infrastructure
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      ACTION: ${{ inputs.action }}
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_disable_deletion_protection: ${{ inputs.disable_deletion_protection }}
+      # scripts/terraform-init.sh reads <PREFIX>_REMOTE_STORAGE_* for the environment it runs. The
+      # job only sees its own environment's secrets, so each prefix gets the same values.
+      DEV_REMOTE_STORAGE_AWS_S3_BUCKET: ${{ secrets.REMOTE_STORAGE_AWS_S3_BUCKET }}
+      DEV_REMOTE_STORAGE_AWS_REGION: ${{ secrets.REMOTE_STORAGE_AWS_REGION }}
+      DEV_REMOTE_STORAGE_AWS_S3_KEY: ${{ secrets.REMOTE_STORAGE_AWS_S3_KEY }}
+      STAGING_REMOTE_STORAGE_AWS_S3_BUCKET: ${{ secrets.REMOTE_STORAGE_AWS_S3_BUCKET }}
+      STAGING_REMOTE_STORAGE_AWS_REGION: ${{ secrets.REMOTE_STORAGE_AWS_REGION }}
+      STAGING_REMOTE_STORAGE_AWS_S3_KEY: ${{ secrets.REMOTE_STORAGE_AWS_S3_KEY }}
+      PROD_REMOTE_STORAGE_AWS_S3_BUCKET: ${{ secrets.REMOTE_STORAGE_AWS_S3_BUCKET }}
+      PROD_REMOTE_STORAGE_AWS_REGION: ${{ secrets.REMOTE_STORAGE_AWS_REGION }}
+      PROD_REMOTE_STORAGE_AWS_S3_KEY: ${{ secrets.REMOTE_STORAGE_AWS_S3_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.15.6"
+          terraform_wrapper: false # outputs are read with `terraform output -raw`
+
+      # Cluster admins: the EKS deploy role, so the deploy job can apply cluster/, plus anyone in
+      # EKS_ADMIN_PRINCIPAL_ARNS (comma-separated), e.g. your own IAM user to use kubectl. The
+      # infrastructure role is left out: it creates the cluster, so EKS already makes it an admin.
+      - name: Check settings
+        env:
+          INFRA_ROLE_ARN: ${{ vars.AWS_INFRA_ROLE_ARN }}
+          EKS_DEPLOY_ROLE_ARN: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+          EXTRA_ADMINS: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS }}
+        run: |
+          missing=()
+          [ -n "$INFRA_ROLE_ARN" ] || missing+=("AWS_INFRA_ROLE_ARN (repository variable)")
+          [ -n "$EKS_DEPLOY_ROLE_ARN" ] || missing+=("AWS_EKS_DEPLOY_ROLE_ARN (repository variable)")
+          [ -n "$DEV_REMOTE_STORAGE_AWS_S3_BUCKET" ] || missing+=("REMOTE_STORAGE_AWS_S3_BUCKET (secret in $ENVIRONMENT)")
+          [ -n "$DEV_REMOTE_STORAGE_AWS_REGION" ] || missing+=("REMOTE_STORAGE_AWS_REGION (secret in $ENVIRONMENT)")
+          [ -n "$DEV_REMOTE_STORAGE_AWS_S3_KEY" ] || missing+=("REMOTE_STORAGE_AWS_S3_KEY (secret in $ENVIRONMENT)")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Missing setting: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+          ADMINS="$(jq -cn --arg deploy "$EKS_DEPLOY_ROLE_ARN" --arg extra "$EXTRA_ADMINS" --arg infra "$INFRA_ROLE_ARN" '
+            [$deploy] + ($extra | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))
+            | map(select(. != $infra)) | unique')"
+          echo "TF_VAR_cluster_admin_principal_arns=$ADMINS" >> "$GITHUB_ENV"
+          echo "Cluster admins besides the infrastructure role: $ADMINS"
+
+      - name: Configure AWS credentials (OIDC, infrastructure role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_INFRA_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+
+      - name: Terraform ${{ inputs.action }}
+        run: |
+          case "$ACTION" in
+            plan)    ./scripts/terraform-run.sh plan ;;
+            apply)   ./scripts/terraform-run.sh plan -out=tfplan && terraform apply tfplan ;;
+            destroy) ./scripts/terraform-run.sh destroy -auto-approve ;;
+          esac
+
+      - name: Summary
+        if: env.ACTION == 'apply'
+        run: |
+          {
+            echo "## Cluster $(terraform output -raw cluster_name) is ready"
+            echo
+            echo "Connect with (needs an access entry: add your IAM ARN to EKS_ADMIN_PRINCIPAL_ARNS):"
+            echo
+            echo '```bash'
+            terraform output -raw configure_kubectl
+            echo
+            echo '```'
+            echo
+            echo "Push to the environment's branch, or run **Publish and Deploy**, to deploy cluster/ to it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf .terraform tfplan

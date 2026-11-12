@@ -1,0 +1,54 @@
+# Data sources Grafana creates on startup, cross-linked so you can jump
+# metrics -> traces -> logs and back.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Exemplars on histograms link to the trace that produced them. They come
+      # from Tempo's span metrics (traces_spanmetrics_latency), labelled
+      # traceID; the OTel JS Prometheus exporter does not emit exemplars.
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # "Logs for this span": Loki stream labelled with the span's service, and
+      # lines carrying this trace's ID (the "traceid" field Alloy writes).
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        customQuery: true
+        query: '{service_name="$${__span.tags["service.name"]}"} |= "$${__trace.traceId}"'
+      tracesToMetrics:
+        datasourceUid: prometheus
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # otelcol.exporter.loki writes each record as JSON with a "traceid"
+      # field; turn it into a "View in Tempo" button on every log line.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"traceid":"(\w+)"'
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: View in Tempo

@@ -1,0 +1,17 @@
+# EKS installs the EBS CSI driver (infrastructure/modules/eks/addons.tf) but no storage class, so
+# PersistentVolumeClaims would stay Pending without this one.
+# WaitForFirstConsumer creates each volume in the availability zone of the node that runs the pod.
+# Volumes are deleted with their claims; Kubernetes never deletes a StatefulSet's claims by itself.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete

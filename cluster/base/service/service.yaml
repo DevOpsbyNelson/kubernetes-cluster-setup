@@ -1,0 +1,83 @@
+# The API built from service/. Its image name is replaced at deploy time (see cluster/README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service
+  namespace: service
+  labels:
+    app.kubernetes.io/name: service
+spec:
+  # Prometheus scrapes the Service address (SERVICE_EXPORTER_TARGET), which reaches one pod per
+  # scrape. With more replicas their metrics would mix, so keep one until the scrape config
+  # discovers pods individually.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: service
+    spec:
+      # The app stops after at most 10 s (src/app.ts), flushing its telemetry first.
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: eks-cluster/service
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9464
+          env:
+            - name: SERVICE_NAME
+              value: service
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://alloy.observability.svc.cluster.local:4318
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            # Above ServiceHighMemory's 512 MiB, so the alert fires before the container is killed.
+            limits:
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /health/ping
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service
+  namespace: service
+  labels:
+    app.kubernetes.io/name: service
+spec:
+  selector:
+    app.kubernetes.io/name: service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: metrics
+      port: 9464
+      targetPort: metrics

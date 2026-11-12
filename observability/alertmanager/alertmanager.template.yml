@@ -1,0 +1,45 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: "${SLACK_WEBHOOK_URL}"
+
+# The root route — all alerts land here first.
+route:
+  receiver: slack-notifications
+  group_by: [alertname, job, severity]
+  group_wait: 30s        # wait 30s to batch alerts in the same group
+  group_interval: 5m     # wait 5m before sending a new notification for an existing group
+  repeat_interval: 4h    # re-notify every 4h while the alert keeps firing
+
+receivers:
+  - name: slack-notifications
+    slack_configs:
+      - channel: "${SLACK_ALERTS_CHANNEL}"
+        send_resolved: true
+        icon_emoji: ":bell:"
+        title: |-
+          [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}
+        text: |-
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* `{{ .Labels.severity }}`
+          *Job:* `{{ .Labels.job }}`
+          {{ if eq .Status "firing" }}*Firing since:* {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}{{ end }}
+          {{ if eq .Status "resolved" }}*Resolved at:* {{ .EndsAt.Format "2006-01-02 15:04:05 UTC" }}{{ end }}
+          {{ end }}
+
+inhibit_rules:
+  # Service down — its other alerts are symptoms (no traffic, stale metrics),
+  # ServiceDown is the root cause. Rules: prometheus/rules/service/*.yml.
+  - source_matchers:
+      - alertname="ServiceDown"
+    target_matchers:
+      - alertname=~"Service.+"
+      - alertname!="ServiceDown"
+    equal: ["job"]
+  # A saturated event loop is why latency and lag rise; page for the cause.
+  - source_matchers:
+      - alertname="ServiceEventLoopSaturated"
+    target_matchers:
+      - alertname=~"ServiceHighLatency|ServiceEventLoopLag"
+    equal: ["job"]

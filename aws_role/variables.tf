@@ -1,5 +1,5 @@
 variable "aws_region" {
-  description = "AWS region for the provider (IAM itself is global)."
+  description = "Region of the ECR repositories and the EKS clusters (IAM itself is global)."
   type        = string
   default     = "us-east-1"
 }
@@ -43,25 +43,63 @@ variable "github_environments" {
 }
 
 variable "project_name" {
-  description = "Project name used for the role policy name and the Project tag."
+  description = "project_name of infrastructure/. Its clusters, IAM roles and log groups are named <project_name>-<stage>..., which scopes the infrastructure and EKS deploy roles. Also used for policy names and the Project tag."
   type        = string
   default     = "eks-cluster"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{1,22}[a-z0-9]$", var.project_name))
+    error_message = "project_name must be 3-24 chars of lowercase letters, numbers and hyphens, like infrastructure/'s project_name."
+  }
 }
 
 variable "role_name" {
-  description = "Name of the IAM role that GitHub Actions assumes."
+  description = "Name of the IAM role that pushes images to ECR."
   type        = string
   default     = "github-actions-ecr-push"
 }
 
-variable "ecr_repository_name" {
-  description = "Name of the ECR repository for the image built from service/. It is created here and is the only repository the role can push to."
+variable "infrastructure_role_name" {
+  description = "Name of the IAM role that runs Terraform in infrastructure/."
   type        = string
-  default     = "eks-cluster/service"
+  default     = "github-actions-eks-infrastructure"
+}
+
+variable "eks_deploy_role_name" {
+  description = "Name of the IAM role that deploys to the EKS clusters."
+  type        = string
+  default     = "github-actions-eks-deploy"
+}
+
+variable "ecr_namespace" {
+  description = "Prefix of the ECR repository names: <ecr_namespace>/<repository>."
+  type        = string
+  default     = "eks-cluster"
 
   validation {
-    condition     = length(var.ecr_repository_name) >= 2 && length(var.ecr_repository_name) <= 256 && can(regex("^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$", var.ecr_repository_name))
-    error_message = "ecr_repository_name must be 2-256 lowercase characters: letters and numbers separated by '.', '_', '-' or '/'."
+    condition     = can(regex("^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$", var.ecr_namespace))
+    error_message = "ecr_namespace must be lowercase letters and numbers separated by '.', '_', '-' or '/'."
+  }
+}
+
+variable "ecr_repositories" {
+  description = "ECR repositories to create, one per image: service/ and each folder in observability/. The push role can push to these only."
+  type        = list(string)
+  default     = ["service", "alertmanager", "alloy", "grafana", "loki", "prometheus", "tempo"]
+
+  validation {
+    condition     = contains(var.ecr_repositories, "service") && alltrue([for r in var.ecr_repositories : can(regex("^[a-z0-9]+([._-][a-z0-9]+)*$", r))])
+    error_message = "ecr_repositories must include \"service\", and each name must be lowercase letters and numbers separated by '.', '_' or '-'."
+  }
+}
+
+variable "state_bucket_name" {
+  description = "S3 bucket with infrastructure/'s Terraform state (REMOTE_STORAGE_AWS_S3_BUCKET). The infrastructure role may only use its env:/ workspace states."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.state_bucket_name))
+    error_message = "state_bucket_name must be a valid S3 bucket name."
   }
 }
 

@@ -1,0 +1,2 @@
+# Written by the deploy job: the overlay plus the image tags of the commit being deployed.
+.deploy/

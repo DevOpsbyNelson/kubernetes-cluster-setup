@@ -1,0 +1,34 @@
+# Deployed from the main branch to eks-cluster-production.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  # Keep 80% of normal traces; lower it to bound Tempo's storage. Errors and slow traces are always kept.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: alloy
+        namespace: observability
+      spec:
+        template:
+          spec:
+            containers:
+              - name: alloy
+                env:
+                  - name: ALLOY_SAMPLE_RATE
+                    value: "80"
+
+  # Volume size for Prometheus, Loki and Tempo in production (now the same as the base). It only
+  # applies when a StatefulSet is created: to grow an existing volume, edit its
+  # PersistentVolumeClaim instead (the gp3 class allows expansion).
+  - target:
+      kind: StatefulSet
+      name: prometheus|loki|tempo
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 10Gi

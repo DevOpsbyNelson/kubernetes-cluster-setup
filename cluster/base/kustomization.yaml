@@ -1,0 +1,20 @@
+# Everything every environment runs. Image names are placeholders (eks-cluster/<name>): the deploy
+# job points them at ECR with the tag built from the same commit.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: eks-cluster
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespaces.yaml
+  - storageclass.yaml
+  - service/service.yaml
+  - observability/alloy.yaml
+  - observability/tempo.yaml
+  - observability/loki.yaml
+  - observability/prometheus.yaml
+  - observability/alertmanager.yaml
+  - observability/grafana.yaml

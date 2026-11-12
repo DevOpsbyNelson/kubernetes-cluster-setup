@@ -110,6 +110,18 @@ kubectl get nodes
 TF_INIT_RECONFIGURE=true ENVIRONMENT=production ./scripts/terraform-run.sh plan
 ```
 
+### From GitHub Actions
+
+The [Infrastructure](../.github/workflows/infrastructure.yml) workflow runs these same scripts from `main`. Choose the environment and the action:
+
+```bash
+gh workflow run infrastructure.yml -f environment=development -f action=apply
+```
+
+It uses the `github-actions-eks-infrastructure` role from [`aws_role/`](../aws_role/), so no AWS keys are needed. The state settings come from the environment's `REMOTE_STORAGE_*` secrets. It also passes `cluster_admin_principal_arns`, so the deploy role and the ARNs in `EKS_ADMIN_PRINCIPAL_ARNS` can use the cluster. See the [workflows README](../.github/workflows/README.md#infrastructure).
+
+If you create a cluster locally instead, your own IAM principal becomes its admin, and the deploy job can only use it once you pass the deploy role in `cluster_admin_principal_arns`.
+
 ### Per-stage settings
 
 Set in `var.stages` (`variables.tf`). Override them in a `terraform.tfvars` file if needed; the override replaces the whole map, so include every stage.

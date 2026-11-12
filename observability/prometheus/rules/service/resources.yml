@@ -1,0 +1,32 @@
+groups:
+  - name: service-resources
+    rules:
+      # A blocked event loop delays every request on the instance at once.
+      # nodejs_eventloop_delay_p99 is in seconds.
+      - alert: ServiceEventLoopLag
+        expr: nodejs_eventloop_delay_p99{job="service"} > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.instance }} event loop is lagging"
+          description: "p99 event loop delay is {{ $value | humanizeDuration }} (threshold 500ms)."
+
+      - alert: ServiceEventLoopSaturated
+        expr: nodejs_eventloop_utilization{job="service"} > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.instance }} event loop is saturated"
+          description: "The event loop has been busy {{ $value | humanizePercentage }} of the time for 10 minutes; the instance is CPU-bound."
+
+      # process_memory_usage is resident memory in bytes (@opentelemetry/host-metrics).
+      - alert: ServiceHighMemory
+        expr: process_memory_usage{job="service"} > 512 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.instance }} memory above 512 MiB"
+          description: "Resident memory is {{ $value | humanize1024 }}B. Check for a leak before the container hits its limit."

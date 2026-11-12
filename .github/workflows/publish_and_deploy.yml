@@ -1,0 +1,276 @@
+name: Publish and Deploy
+
+# Builds the service and observability images, pushes them to private ECR, then deploys cluster/
+# to the EKS cluster of the branch's environment:
+#   dev -> development, staging -> staging, main -> production.
+#
+# Each image is tagged with the Git tree hash of its folder, so it is rebuilt only when that folder
+# changes, and the same content keeps the same tag on every branch: promoting a commit reuses its
+# images. The deploy job computes the same tags from the commit it deploys.
+on:
+  push:
+    branches: [dev, staging, main]
+    paths:
+      - service/**
+      - observability/**
+      - cluster/**
+      - .github/workflows/publish_and_deploy.yml
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  AWS_REGION: us-east-1
+  ECR_NAMESPACE: eks-cluster
+  # <image name>=<build context>. The image goes to ECR as <ECR_NAMESPACE>/<image name>.
+  COMPONENTS: >-
+    service=service
+    alertmanager=observability/alertmanager
+    alloy=observability/alloy
+    grafana=observability/grafana
+    loki=observability/loki
+    prometheus=observability/prometheus
+    tempo=observability/tempo
+
+jobs:
+  publish:
+    name: Publish images
+    # A manual run can be started from any branch; only the stage branches may publish.
+    if: contains(fromJSON('["refs/heads/dev","refs/heads/staging","refs/heads/main"]'), github.ref)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # allows the OIDC step below to request a short-lived token
+    # The roles' trust policy only accepts jobs that run in a listed GitHub environment.
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
+    # Per commit: if the same commit lands on two branches at once, the second run finds the images.
+    concurrency:
+      group: publish-images-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC, ECR push role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Tags are immutable, so an image whose tag exists is skipped instead of pushed again.
+      - name: Build and push changed images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Images"
+            echo
+            echo "| Image | Tag | Result |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for entry in $COMPONENTS; do
+            name="${entry%%=*}"
+            context="${entry#*=}"
+            repository="$ECR_NAMESPACE/$name"
+            tag="$(git rev-parse --verify "HEAD:$context")"
+
+            count="$(aws ecr batch-get-image \
+              --repository-name "$repository" \
+              --image-ids "imageTag=$tag" \
+              --query 'length(images)' \
+              --output text)"
+
+            if [ "$count" -gt 0 ]; then
+              result="already published"
+            else
+              echo "::group::Build $name"
+              # Without --provenance=false, attestations show up as extra untagged entries in ECR.
+              docker buildx build --provenance=false --push --tag "$REGISTRY/$repository:$tag" "$context"
+              echo "::endgroup::"
+              result="built and pushed"
+            fi
+            echo "$name: $result ($tag)"
+            echo "| \`$name\` | \`$tag\` | $result |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  deploy:
+    name: Deploy to EKS
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
+    # One deploy per environment at a time; a newer pending run replaces an older one.
+    concurrency:
+      group: deploy-${{ github.ref_name }}
+      cancel-in-progress: false
+    env:
+      STAGE: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check settings
+        env:
+          EKS_DEPLOY_ROLE_ARN: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$EKS_DEPLOY_ROLE_ARN" ]; then
+            echo "::error::Set the AWS_EKS_DEPLOY_ROLE_ARN repository variable (from the Create Deploy Role job summary)."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, EKS deploy role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The clusters are created separately (Infrastructure workflow); until then there is nothing
+      # to deploy to, which is not an error.
+      - name: Find the cluster
+        id: cluster
+        run: |
+          CLUSTER="eks-cluster-$STAGE"
+          if STATUS="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.status --output text 2> "$RUNNER_TEMP/describe.err")"; then
+            if [ "$STATUS" != "ACTIVE" ]; then
+              echo "::error::Cluster $CLUSTER is $STATUS, not ACTIVE."
+              exit 1
+            fi
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+          elif grep -q ResourceNotFoundException "$RUNNER_TEMP/describe.err"; then
+            echo "::warning::Cluster $CLUSTER doesn't exist yet, so nothing was deployed. Create it with the Infrastructure workflow."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/describe.err" >&2
+            exit 1
+          fi
+
+      # Secrets come from the GitHub environment and are re-applied on every deploy. Pods only read
+      # them at start, so a changed Secret restarts the workload that uses it (after the apply below).
+      - name: Apply secrets
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ALERTS_CHANNEL: ${{ secrets.SLACK_ALERTS_CHANNEL }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          GRAFANA_GITHUB_CLIENT_ID: ${{ secrets.GRAFANA_GITHUB_CLIENT_ID }}
+          GRAFANA_GITHUB_CLIENT_SECRET: ${{ secrets.GRAFANA_GITHUB_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in SLACK_WEBHOOK_URL SLACK_ALERTS_CHANNEL GRAFANA_ADMIN_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Add these secrets to the $STAGE environment: ${missing[*]}"
+            exit 1
+          fi
+          # GitHub sign-in in Grafana is optional: it's turned off without an OAuth app.
+          if [ -n "$GRAFANA_GITHUB_CLIENT_ID" ] && [ -n "$GRAFANA_GITHUB_CLIENT_SECRET" ]; then
+            GITHUB_LOGIN=true
+          else
+            GITHUB_LOGIN=false
+          fi
+
+          kubectl apply -f cluster/base/namespaces.yaml
+
+          # Values go through files, not the command line, so they never show up in process lists.
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          write() { printf '%s' "$2" > "$dir/$1"; }
+          write SLACK_WEBHOOK_URL "$SLACK_WEBHOOK_URL"
+          write SLACK_ALERTS_CHANNEL "$SLACK_ALERTS_CHANNEL"
+          write GF_SECURITY_ADMIN_PASSWORD "$GRAFANA_ADMIN_PASSWORD"
+          write GF_AUTH_GITHUB_ENABLED "$GITHUB_LOGIN"
+          write GF_AUTH_GITHUB_CLIENT_ID "$GRAFANA_GITHUB_CLIENT_ID"
+          write GF_AUTH_GITHUB_CLIENT_SECRET "$GRAFANA_GITHUB_CLIENT_SECRET"
+
+          # apply_secret <workload> <secret> <keys...>: creates or updates the Secret, and marks the
+          # workload for a restart when an existing Secret changed.
+          apply_secret() {
+            local workload="$1" secret="$2" args=()
+            shift 2
+            for key in "$@"; do args+=("--from-file=$key=$dir/$key"); done
+            result="$(kubectl -n observability create secret generic "$secret" "${args[@]}" --dry-run=client -o yaml | kubectl apply -f -)"
+            echo "$result"
+            case "$result" in
+              *configured*) echo "$workload" >> "$RUNNER_TEMP/restart" ;;
+            esac
+          }
+          : > "$RUNNER_TEMP/restart"
+          apply_secret statefulset/alertmanager alertmanager-slack SLACK_WEBHOOK_URL SLACK_ALERTS_CHANNEL
+          apply_secret statefulset/grafana grafana GF_SECURITY_ADMIN_PASSWORD GF_AUTH_GITHUB_ENABLED GF_AUTH_GITHUB_CLIENT_ID GF_AUTH_GITHUB_CLIENT_SECRET
+
+      - name: Deploy
+        if: steps.cluster.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+          # The environment's overlay, with each image pointed at ECR and the tag published for
+          # this commit (the tree hash of its folder, as in the publish job).
+          mkdir -p cluster/.deploy
+          {
+            echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+            echo "kind: Kustomization"
+            echo "resources:"
+            echo "  - ../overlays/$STAGE"
+            echo "images:"
+            for entry in $COMPONENTS; do
+              name="${entry%%=*}"
+              context="${entry#*=}"
+              tag="$(git rev-parse --verify "HEAD:$context")"
+              echo "  - name: $ECR_NAMESPACE/$name"
+              echo "    newName: $REGISTRY/$ECR_NAMESPACE/$name"
+              echo "    newTag: \"$tag\""
+            done
+          } > cluster/.deploy/kustomization.yaml
+          cat cluster/.deploy/kustomization.yaml
+
+          kubectl apply -k cluster/.deploy
+
+          while read -r workload; do
+            if [ -n "$workload" ]; then
+              kubectl -n observability rollout restart "$workload"
+            fi
+          done < "$RUNNER_TEMP/restart"
+
+          for namespace in service observability; do
+            for workload in $(kubectl -n "$namespace" get deployment,statefulset -o name); do
+              kubectl -n "$namespace" rollout status "$workload" --timeout=10m
+            done
+          done
+
+      - name: Show pods
+        if: always() && steps.cluster.outputs.exists == 'true'
+        run: |
+          kubectl get pods -n service -o wide
+          kubectl get pods -n observability -o wide
+          kubectl get events -n observability --sort-by=.lastTimestamp | tail -20
+
+      - name: Summary
+        if: success() && steps.cluster.outputs.exists == 'true'
+        run: |
+          {
+            echo "## Deployed to eks-cluster-$STAGE"
+            echo
+            echo '```bash'
+            echo "aws eks update-kubeconfig --region $AWS_REGION --name eks-cluster-$STAGE"
+            echo "kubectl -n observability port-forward svc/grafana 3000:3000   # http://localhost:3000"
+            echo "kubectl -n service port-forward svc/service 8080:80           # http://localhost:8080"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

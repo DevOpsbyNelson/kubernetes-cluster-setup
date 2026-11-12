@@ -1,8 +1,10 @@
 name: Create Deploy Role
 
-# Manually creates (or updates/destroys) the ECR repository for service/ and the IAM role that
-# GitHub Actions assumes through OIDC to push the image there. Runs with the bootstrap role from the AWS_BOOTSTRAP_ROLE_ARN secret of the "aws-bootstrap"
-# environment. Nothing account-specific is hardcoded: the account comes from that role.
+# Manually creates (or updates/destroys) aws_role/: the ECR repositories for service/ and
+# observability/, and the IAM roles GitHub Actions assumes through OIDC to push images, run
+# Terraform in infrastructure/ and deploy to EKS. Runs with the bootstrap role from the
+# AWS_BOOTSTRAP_ROLE_ARN variable of the "aws-bootstrap" environment. Nothing account-specific is
+# hardcoded: the account comes from that role.
 on:
   workflow_dispatch:
     inputs:
@@ -19,10 +21,10 @@ on:
         description: Name of the ECR push role to create
         type: string
         default: github-actions-ecr-push
-      ecr_repository_name:
-        description: ECR repository to create for the service/ image
+      ecr_namespace:
+        description: Prefix of the ECR repositories (<namespace>/service, <namespace>/grafana, ...)
         type: string
-        default: eks-cluster/service
+        default: eks-cluster
       project_name:
         description: project_name of infrastructure/ (used for the state bucket name and the Project tag)
         type: string
@@ -53,7 +55,7 @@ jobs:
     permissions:
       contents: read
       id-token: write # allows the OIDC step below to request a short-lived token
-    # Holds AWS_BOOTSTRAP_ROLE_ARN; protect it with required reviewers and the main branch only.
+    # Holds the AWS_BOOTSTRAP_ROLE_ARN variable; protect it with required reviewers and the main branch only.
     environment: aws-bootstrap
     concurrency:
       group: create-deploy-role
@@ -70,7 +72,7 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_VAR_github_repository: ${{ inputs.github_repository || github.repository }}
       TF_VAR_role_name: ${{ inputs.role_name }}
-      TF_VAR_ecr_repository_name: ${{ inputs.ecr_repository_name }}
+      TF_VAR_ecr_namespace: ${{ inputs.ecr_namespace }}
       TF_VAR_project_name: ${{ inputs.project_name }}
       TF_VAR_create_oidc_provider: ${{ inputs.create_oidc_provider }}
       TF_VAR_aws_region: ${{ inputs.aws_region }}
@@ -121,6 +123,8 @@ jobs:
           {
             echo "ACCOUNT_ID=$ACCOUNT_ID"
             echo "STATE_BUCKET=$STATE_BUCKET"
+            # The same bucket holds infrastructure/'s state, which the infrastructure role may use.
+            echo "TF_VAR_state_bucket_name=$STATE_BUCKET"
           } >> "$GITHUB_ENV"
           echo "Account: $ACCOUNT_ID  State bucket: $STATE_BUCKET"
 
@@ -164,24 +168,23 @@ jobs:
         if: env.ACTION == 'apply'
         run: |
           ROLE_ARN="$(terraform output -raw role_arn)"
-          ECR_REPOSITORY_URL="$(terraform output -raw ecr_repository_url)"
+          INFRA_ROLE_ARN="$(terraform output -raw infrastructure_role_arn)"
+          EKS_DEPLOY_ROLE_ARN="$(terraform output -raw eks_deploy_role_arn)"
+          ECR_REGISTRY="$(terraform output -raw ecr_registry)"
           {
-            echo "## ECR push role ready"
+            echo "## Roles and ECR repositories ready"
             echo
-            echo "**Repository secret** (Settings → Secrets and variables → Actions), shared by all stages:"
+            echo "Set these in **Settings → Secrets and variables → Actions**, at repository level (shared by all stages):"
             echo
-            echo "| Secret | Value |"
-            echo "|---|---|"
-            echo "| \`AWS_DEPLOY_ROLE_ARN\` | \`$ROLE_ARN\` |"
+            echo "| Name | Type | Value |"
+            echo "|---|---|---|"
+            echo "| \`AWS_DEPLOY_ROLE_ARN\` | Secret | \`$ROLE_ARN\` |"
+            echo "| \`AWS_INFRA_ROLE_ARN\` | Variable | \`$INFRA_ROLE_ARN\` |"
+            echo "| \`AWS_EKS_DEPLOY_ROLE_ARN\` | Variable | \`$EKS_DEPLOY_ROLE_ARN\` |"
             echo
-            echo "**Push target** for the image built from \`service/\`:"
+            echo "Images are pushed to \`$ECR_REGISTRY/$TF_VAR_ecr_namespace/<name>\` in \`$AWS_REGION\`."
             echo
-            echo "| Setting | Value |"
-            echo "|---|---|"
-            echo "| ECR repository | \`$ECR_REPOSITORY_URL\` |"
-            echo "| AWS region | \`$AWS_REGION\` |"
-            echo
-            echo "The pushing job must set \`environment:\` to \`development\`, \`staging\` or \`production\`, and tags must be unique (for example the commit SHA)."
+            echo "Jobs that assume these roles must set \`environment:\` to \`development\`, \`staging\` or \`production\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean up

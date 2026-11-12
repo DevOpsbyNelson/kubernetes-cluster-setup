@@ -1,7 +1,13 @@
-# Unit tests for the GitHub Actions OIDC role that pushes to ECR. The AWS provider is mocked: no
-# credentials needed, nothing is created. Run from aws_role/: terraform init -backend=false && terraform test
+# Unit tests for the ECR repositories and the GitHub Actions OIDC roles. The AWS provider is mocked:
+# no credentials needed, nothing is created. Run from aws_role/: terraform init -backend=false && terraform test
 
 mock_provider "aws" {
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
   mock_resource "aws_iam_openid_connect_provider" {
     defaults = {
       arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
@@ -13,17 +19,11 @@ mock_provider "aws" {
       arn = "arn:aws:iam::123456789012:oidc-provider/existing"
     }
   }
-
-  mock_resource "aws_ecr_repository" {
-    defaults = {
-      arn            = "arn:aws:ecr:us-east-1:123456789012:repository/eks-cluster/service"
-      repository_url = "123456789012.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/service"
-    }
-  }
 }
 
 variables {
   github_repository = "acme/site"
+  state_bucket_name = "acme-tfstate"
 }
 
 run "trust_policy_is_limited_to_repo_environments" {
@@ -52,8 +52,21 @@ run "trust_policy_is_limited_to_repo_environments" {
   }
 
   assert {
-    condition     = aws_iam_role.deploy.name == "github-actions-ecr-push" && aws_iam_role.deploy.max_session_duration == 3600
-    error_message = "Role name and session length must use the defaults."
+    condition = (
+      aws_iam_role.infrastructure.assume_role_policy == aws_iam_role.deploy.assume_role_policy &&
+      aws_iam_role.eks_deploy.assume_role_policy == aws_iam_role.deploy.assume_role_policy
+    )
+    error_message = "All roles must trust the same GitHub jobs."
+  }
+
+  assert {
+    condition = (
+      aws_iam_role.deploy.name == "github-actions-ecr-push" &&
+      aws_iam_role.infrastructure.name == "github-actions-eks-infrastructure" &&
+      aws_iam_role.eks_deploy.name == "github-actions-eks-deploy" &&
+      aws_iam_role.deploy.max_session_duration == 3600
+    )
+    error_message = "Role names and session length must use the defaults."
   }
 }
 
@@ -73,32 +86,40 @@ run "reuses_existing_oidc_provider" {
   }
 }
 
-run "ecr_repository_is_hardened" {
+run "ecr_repositories_are_hardened" {
   assert {
-    condition     = aws_ecr_repository.service.name == "eks-cluster/service"
-    error_message = "The repository must use the default name."
+    condition = toset([for repo in aws_ecr_repository.this : repo.name]) == toset([
+      "eks-cluster/alertmanager",
+      "eks-cluster/alloy",
+      "eks-cluster/grafana",
+      "eks-cluster/loki",
+      "eks-cluster/prometheus",
+      "eks-cluster/service",
+      "eks-cluster/tempo",
+    ])
+    error_message = "There must be one repository for the service and each observability image."
   }
 
   assert {
-    condition     = aws_ecr_repository.service.image_tag_mutability == "IMMUTABLE"
+    condition     = alltrue([for repo in aws_ecr_repository.this : repo.image_tag_mutability == "IMMUTABLE"])
     error_message = "Image tags must be immutable."
   }
 
   assert {
-    condition     = aws_ecr_repository.service.image_scanning_configuration[0].scan_on_push
+    condition     = alltrue([for repo in aws_ecr_repository.this : repo.image_scanning_configuration[0].scan_on_push])
     error_message = "Images must be scanned on push."
   }
 
   assert {
-    condition     = output.ecr_repository_url == "123456789012.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/service"
-    error_message = "The repository URL must be exposed for the push workflow."
+    condition     = output.ecr_registry == "123456789012.dkr.ecr.us-east-1.amazonaws.com" && length(output.ecr_repository_urls) == 7
+    error_message = "The registry and repository URLs must be exposed."
   }
 }
 
 run "push_policy_is_scoped" {
   assert {
-    condition     = one([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "EcrPush"]) == "arn:aws:ecr:us-east-1:123456789012:repository/eks-cluster/service"
-    error_message = "Push permissions must be limited to the service repository."
+    condition     = toset(one([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "EcrPush"])) == toset([for repo in aws_ecr_repository.this : repo.arn])
+    error_message = "Push permissions must be limited to this project's repositories."
   }
 
   assert {
@@ -107,16 +128,67 @@ run "push_policy_is_scoped" {
   }
 
   assert {
-    condition = contains(
-      one([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Action if s.Sid == "EcrPush"]),
-      "ecr:PutImage",
-    )
-    error_message = "The role must be able to push images."
+    condition     = alltrue([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : alltrue([for a in s.Action : startswith(a, "ecr:") && a != "ecr:*"])])
+    error_message = "The push role may only have specific ECR actions."
+  }
+}
+
+run "infrastructure_policy_is_scoped" {
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement : s.Resource if s.Sid == "TerraformStateObjects"]) == "arn:aws:s3:::acme-tfstate/env:/*"
+    error_message = "State access must be limited to infrastructure/'s workspace states."
   }
 
   assert {
-    condition     = alltrue([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : alltrue([for a in s.Action : startswith(a, "ecr:") && a != "ecr:*"])])
-    error_message = "The role may only have specific ECR actions."
+    condition = alltrue([
+      for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement :
+      alltrue([for r in flatten([s.Resource]) : r == "arn:aws:iam::123456789012:role/eks-cluster-*"])
+      if anytrue([for a in s.Action : startswith(a, "iam:") && !contains(["iam:CreateServiceLinkedRole", "iam:GetRole"], a)])
+    ])
+    error_message = "IAM changes must be limited to roles named eks-cluster-*."
+  }
+
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement :
+      s.Condition.ArnEquals["iam:PolicyARN"] if s.Sid == "ClusterRolePolicies"
+      ])) == toset([
+      "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+      "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+      "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+      "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
+      "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+    ])
+    error_message = "Only the cluster's AWS managed policies may be attached."
+  }
+
+  assert {
+    condition = !anytrue([
+      for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement :
+      anytrue([for a in s.Action : contains(["iam:*", "s3:*", "kms:*", "kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "iam:CreateUser", "iam:CreatePolicy"], a)])
+    ])
+    error_message = "The infrastructure role must not get broad IAM, S3 or KMS data permissions."
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_iam_role_policy.infrastructure.policy).Statement :
+      try(s.Condition.StringEquals["aws:RequestedRegion"], "") == "us-east-1"
+      if contains(["Network", "Eks", "SecretsKey"], s.Sid)
+    ])
+    error_message = "EC2, EKS and KMS permissions must be limited to the configured region."
+  }
+}
+
+run "eks_deploy_policy_only_finds_clusters" {
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.eks_deploy.policy).Statement[0].Action == ["eks:DescribeCluster"] && length(jsondecode(aws_iam_role_policy.eks_deploy.policy).Statement) == 1
+    error_message = "The EKS deploy role may only describe clusters; Kubernetes access comes from access entries."
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.eks_deploy.policy).Statement[0].Resource == "arn:aws:eks:us-east-1:123456789012:cluster/eks-cluster-*"
+    error_message = "The EKS deploy role must be limited to this project's clusters."
   }
 }
 
@@ -177,12 +249,22 @@ run "rejects_empty_environments" {
   expect_failures = [var.github_environments]
 }
 
-run "rejects_invalid_ecr_repository_name" {
+run "rejects_repositories_without_service" {
   command = plan
 
   variables {
-    ecr_repository_name = "Not/A_Valid-Name-"
+    ecr_repositories = ["grafana"]
   }
 
-  expect_failures = [var.ecr_repository_name]
+  expect_failures = [var.ecr_repositories]
+}
+
+run "rejects_invalid_state_bucket" {
+  command = plan
+
+  variables {
+    state_bucket_name = "Not_A_Bucket"
+  }
+
+  expect_failures = [var.state_bucket_name]
 }

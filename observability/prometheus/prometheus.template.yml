@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "${PROMETHEUS_ALERT_MANAGER_TARGET}"
+
+rule_files:
+  # @if SERVICE_ENABLED
+  - /etc/prometheus/rules/service/*.yml
+  # @endif
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "${PROMETHEUS_EXPORTER_TARGET}"
+  # @if SERVICE_ENABLED
+  - job_name: service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "${SERVICE_EXPORTER_TARGET}"
+        labels:
+          service: service
+  # @endif

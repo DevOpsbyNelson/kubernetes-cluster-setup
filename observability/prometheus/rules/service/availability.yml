@@ -1,0 +1,37 @@
+groups:
+  - name: service-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.instance }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for more than 1 minute."
+
+      # Share of requests answered with 5xx. 4xx are client errors and excluded.
+      - alert: ServiceHighErrorRate
+        expr: |
+          sum by (job) (rate(http_server_request_duration_count{job="service", http_response_status_code=~"5.."}[5m]))
+            /
+          sum by (job) (rate(http_server_request_duration_count{job="service"}[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is failing more than 5% of requests"
+          description: "{{ $value | humanizePercentage }} of requests returned 5xx over the last 5 minutes."
+
+      - alert: ServiceHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(http_server_request_duration_bucket{job="service"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.job }} p95 latency above 1s"
+          description: "95th percentile request duration is {{ $value | humanizeDuration }} over the last 5 minutes."

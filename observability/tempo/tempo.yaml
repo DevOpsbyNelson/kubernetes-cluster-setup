@@ -1,0 +1,95 @@
+# Single-binary Tempo 3. Requires -config.expand-env=true (see Dockerfile) for
+# the ${VAR} placeholders below.
+#
+# Zero-downtime replacement: a new container starts while the old one is still
+# running. Both must never share a WAL, or each replays/claims the other's
+# files. So the WAL lives in the container's own /tmp (lost with the
+# container, never shared), and only finished blocks go to the persistent
+# volume (/var/tempo). Trade-off: spans still in the WAL when a container is
+# replaced (not yet flushed to a block) are lost.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        # Alloy exports over OTLP/HTTP (ALLOY_TEMPO_OTLP_ENDPOINT).
+        http:
+          endpoint: 0.0.0.0:4318
+
+backend_scheduler:
+  provider:
+    compaction:
+      compaction:
+        block_retention: 600h # 25 DAYS
+
+backend_worker:
+  compaction:
+    block_retention: 600h # 25 DAYS
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /tmp/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+# Derives Prometheus metrics from the spans themselves and remote-writes them
+# to Prometheus:
+#  - service-graphs: traces_service_graph_request_* — the edges between
+#    services, read by the Tempo datasource's serviceMap (Grafana's
+#    "Service Graph" tab).
+#  - span-metrics: traces_spanmetrics_* — RED metrics (rate/errors/duration)
+#    per service, span name, kind and status, with trace exemplars.
+# Runs on every span the distributor accepts — i.e. after Alloy's tail
+# sampling, so rates are of the sampled traffic, not the raw one. TraceQL
+# metrics queries (rate(), quantile_over_time()) don't need this: Tempo 3
+# answers them straight from its own blocks.
+# A wrong URL only loses these metrics — traces are unaffected. Requires
+# Prometheus' --web.enable-remote-write-receiver.
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /tmp/tempo/generator/wal
+    remote_write:
+      - url: ${TEMPO_PROMETHEUS_REMOTE_WRITE_URL:-http://prometheus:9090/api/v1/write}
+        send_exemplars: true
+
+overrides:
+  defaults:
+    ingestion:
+      rate_strategy: local
+      burst_size_bytes: 20000000
+      rate_limit_bytes: 15000000
+    metrics_generator:
+      processors: [service-graphs, span-metrics]
+      # Caps the series the generator creates (spanmetrics span-name labels
+      # are the usual culprit) so a high-cardinality span name can't flood
+      # Prometheus; excess series are dropped and counted, not stored.
+      max_active_series: 20000
+      processor:
+        span_metrics:
+          # Without these, spanmetrics only says ERROR/UNSET — a 4xx client
+          # error and a 5xx outage look identical. Low cardinality: a handful
+          # of status codes and destination hosts per service. Old and stable
+          # semconv names both listed — older instrumentation emits
+          # http.status_code/http.host, newer SDKs http.response.status_code/
+          # server.address. Prometheus labels: dots become underscores.
+          dimensions:
+            - http.status_code
+            - http.response.status_code
+            - http.host
+            - server.address
+
+usage_report:
+  reporting_enabled: false

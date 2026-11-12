@@ -1,0 +1,114 @@
+logging {
+  level = "info"
+}
+
+// ── Backend OTLP intake ───────────────────────────────────────────────────────
+// Services send traces and logs here (OTEL_EXPORTER_OTLP_ENDPOINT). Metrics do
+// not pass through Alloy: Prometheus scrapes each service's :9464/metrics.
+otelcol.receiver.otlp "backend" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    traces = [otelcol.processor.tail_sampling.default.input]
+    logs   = [otelcol.exporter.loki.backend.input]
+  }
+}
+
+// ── Tail-based sampling ───────────────────────────────────────────────────────
+// Waits up to 10 s for all spans of a trace to arrive, then applies policies
+// in order. A trace is kept if ANY policy matches (OR logic).
+//
+// Result:
+//   - 100 % of traces with at least one ERROR span
+//   - 100 % of traces slower than 2000 ms
+//   - ALLOY_SAMPLE_RATE % of all remaining (normal/fast) traffic — set per
+//     environment (e.g. 100 in dev/staging, lower in prod to bound Tempo
+//     storage); 100 when unset. Tempo's metrics_generator (span metrics,
+//     service graph) only sees what this keeps, so below 100 its rates
+//     undercount normal traffic.
+otelcol.processor.tail_sampling "default" {
+  decision_wait               = "10s"
+  num_traces                  = 50000
+  expected_new_traces_per_sec = 100
+
+  // Keep every trace that contains at least one ERROR span
+  policy {
+    name = "keep-errors"
+    type = "status_code"
+
+    status_code {
+      status_codes = ["ERROR"]
+    }
+  }
+
+  // Keep slow traces (full trace duration exceeds threshold)
+  policy {
+    name = "keep-slow-requests"
+    type = "latency"
+
+    latency {
+      threshold_ms = 2000
+    }
+  }
+
+  // Probabilistic base-rate for normal traffic
+  policy {
+    name = "probabilistic-base-rate"
+    type = "probabilistic"
+
+    probabilistic {
+      // percentage of normal (non-error, non-slow) traces to keep
+      sampling_percentage = encoding.from_json(coalesce(sys.env("ALLOY_SAMPLE_RATE"), "100"))
+    }
+  }
+
+  output {
+    traces = [otelcol.exporter.otlphttp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlphttp "tempo" {
+  client {
+    endpoint = sys.env("ALLOY_TEMPO_OTLP_ENDPOINT")
+  }
+}
+
+// ── Backend logs ──────────────────────────────────────────────────────────────
+// Converts OTLP log records to Loki format and forwards to the shared loki.write
+otelcol.exporter.loki "backend" {
+  forward_to = [loki.process.backend.receiver]
+}
+
+loki.process "backend" {
+  forward_to = [loki.write.default.receiver]
+
+  // Counts backend log lines at ERROR or FATAL. otelcol.exporter.loki turns
+  // the OTLP severity into a `level` label; matched case-insensitively since
+  // pino reports lowercase levels. Exposed as
+  // loki_process_custom_backend_error_logs_total on Alloy's own /metrics
+  // (:12345), for a BackendErrorLogRateSpike-style alert.
+  stage.match {
+    selector = "{level=~\"(?i)error|fatal\"}"
+
+    stage.metrics {
+      metric.counter {
+        name        = "backend_error_logs_total"
+        description = "Backend log lines with severity ERROR or FATAL"
+        match_all   = true
+        action      = "inc"
+      }
+    }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = sys.env("ALLOY_LOKI_URL")
+  }
+}

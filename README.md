@@ -1,96 +1,57 @@
 # Kubernetes cluster setup
 
-Terraform for a Kubernetes cluster on AWS EKS, a sample Node.js service, and a GitHub Actions pipeline that publishes the service image to a private Amazon ECR repository.
+Terraform for AWS EKS clusters in three environments, a sample Node.js service with a Grafana observability stack, and GitHub Actions pipelines that publish their images to private Amazon ECR and deploy them to the clusters.
 
 ```
-service/ ──▶ publish_image.yml ──▶ private ECR repository
-
-infrastructure/ ──▶ terraform-run.sh ──▶ VPC + EKS cluster (one per stage)
+service/ + observability/ ──▶ Publish and Deploy ──▶ private ECR ──▶ EKS cluster of the branch
+                                                                      (cluster/ manifests)
+infrastructure/ ──▶ Infrastructure workflow ──▶ VPC + EKS cluster per environment
 ```
 
-Publishing the image and creating the cluster are separate steps. Nothing deploys the image to the cluster yet.
+| Branch | Environment | Cluster |
+|---|---|---|
+| `dev` | `development` | `eks-cluster-development` |
+| `staging` | `staging` | `eks-cluster-staging` |
+| `main` | `production` | `eks-cluster-production` |
 
 ## Repository layout
 
 | Path | What it holds | Docs |
 |---|---|---|
-| [`infrastructure/`](infrastructure/) | Terraform for the VPC and EKS cluster, with `development`, `staging` and `production` stages | [README](infrastructure/README.md) |
-| [`aws_role/`](aws_role/) | Terraform for the ECR repository and the IAM role GitHub Actions uses to push to it | [README](aws_role/README.md) |
-| [`service/`](service/) | Express app in TypeScript with OpenTelemetry traces, logs and metrics | [Below](#service) |
-| [`.github/workflows/`](.github/workflows/) | GitHub Actions pipelines | [Below](#github-actions) |
+| [`infrastructure/`](infrastructure/) | Terraform for the VPC and EKS cluster of each environment | [README](infrastructure/README.md) |
+| [`aws_role/`](aws_role/) | Terraform for the ECR repositories and the IAM roles GitHub Actions uses | [README](aws_role/README.md) |
+| [`service/`](service/) | Express app in TypeScript with OpenTelemetry traces, logs and metrics | [README](service/README.md) |
+| [`observability/`](observability/) | Images for Alloy, Tempo, Loki, Prometheus, Alertmanager and Grafana, with their configs | [cluster README](cluster/README.md) |
+| [`cluster/`](cluster/) | Kustomize manifests that run the service and observability on EKS | [README](cluster/README.md) |
+| [`.github/workflows/`](.github/workflows/) | GitHub Actions pipelines | [README](.github/workflows/README.md) |
 
 ## Getting started
 
-1. **Create the ECR repository and role.** Follow the one-time setup in [`aws_role/README.md`](aws_role/README.md#one-time-setup-in-a-new-aws-account), then run **Create Deploy Role**.
-2. **Publish the image.** Push a change under `service/` to `dev`, `staging` or `main`, or run **Publish Service Image** by hand on one of those branches.
-3. **Create a cluster.** Follow [`infrastructure/README.md`](infrastructure/README.md). For example, from `infrastructure/`:
+1. **Create the ECR repositories and roles.** Follow the one-time setup in [`aws_role/README.md`](aws_role/README.md#one-time-setup-in-a-new-aws-account), then run **Create Deploy Role**.
+2. **Create the clusters.** Run **Infrastructure** with `action = apply` for each environment. See the [workflows README](.github/workflows/README.md#infrastructure) for the settings it needs.
+3. **Publish and deploy.** Push to `dev`, `staging` or `main`, or run **Publish and Deploy** on one of those branches.
+4. **Open Grafana.** Port-forward to the cluster, as described in [`cluster/README.md`](cluster/README.md#connect).
 
-   ```bash
-   cp .env.example .env   # then edit the values
-   ENVIRONMENT=development ./scripts/bootstrap-state-bucket.sh
-   ENVIRONMENT=development ./scripts/terraform-run.sh plan
-   ENVIRONMENT=development ./scripts/terraform-run.sh apply
-   ```
-
-You need Terraform 1.10 or later, the AWS CLI v2, `kubectl`, and AWS credentials for the target account.
+Each cluster bills by the hour whether or not anything is deployed: roughly $140/month for development and $800/month for all three. To stop paying for an environment, run Infrastructure with `action = destroy` for it.
 
 ## GitHub Actions
 
 | Workflow | Runs | What it does |
 |---|---|---|
-| **Create Deploy Role** ([`create_role.yml`](.github/workflows/create_role.yml)) | By hand | Runs `plan`, `apply` or `destroy` on `aws_role/` |
-| **Publish Service Image** ([`publish_image.yml`](.github/workflows/publish_image.yml)) | On pushes to `dev`, `staging` or `main` that change `service/`, or by hand | Builds `service/` and pushes it to ECR, tagged with the commit SHA |
+| **Create Deploy Role** ([`create_role.yml`](.github/workflows/create_role.yml)) | By hand | Runs `aws_role/`: ECR repositories and IAM roles |
+| **Infrastructure** ([`infrastructure.yml`](.github/workflows/infrastructure.yml)) | By hand, from `main` | Runs `infrastructure/` for one environment |
+| **Publish and Deploy** ([`publish_and_deploy.yml`](.github/workflows/publish_and_deploy.yml)) | On pushes to `dev`, `staging` or `main` that change `service/`, `observability/` or `cluster/`, or by hand | Builds the seven images, pushes the changed ones to ECR, and deploys `cluster/` |
 
-Both workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. They need these settings:
-
-| Name | Type | Where | Used by |
-|---|---|---|---|
-| `AWS_BOOTSTRAP_ROLE_ARN` | Variable | `aws-bootstrap` environment | Create Deploy Role |
-| `AWS_DEPLOY_ROLE_ARN` | Secret | Repository | Publish Service Image |
-
-Publish Service Image picks the GitHub environment from the branch:
-
-| Branch | Environment |
-|---|---|
-| `dev` | `development` |
-| `staging` | `staging` |
-| `main` | `production` |
-
-All stages share one ECR repository, and the image is the same in each: settings are passed when the container starts. A commit is built once, and image tags can't be overwritten, so if a commit is already published, the job skips the build and reuses that image. To promote the same image, fast-forward the next branch to that commit. A merge commit or squash creates a new SHA and a new build.
+All workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. Images are tagged with the Git tree hash of their folder: an image is rebuilt only when its folder changes, and promoting a commit to the next branch reuses its images. The [workflows README](.github/workflows/README.md) lists every secret and variable.
 
 ## Service
 
-The app needs Node.js 26 and pnpm 12. From `service/`:
+See [`service/README.md`](service/README.md). From `service/`:
 
 ```bash
 pnpm install
-pnpm dev         # run with reload on file changes
-pnpm typecheck   # check types
-pnpm build       # bundle into dist/
+pnpm dev     # http://localhost:3000
 ```
-
-Without an OpenTelemetry collector running, the app still works but logs connection errors when it tries to send telemetry.
-
-To run it in Docker:
-
-```bash
-docker build -t service service
-docker run --rm -p 127.0.0.1:3000:3000 -p 127.0.0.1:9464:9464 service
-```
-
-| Endpoint | Port | Returns |
-|---|---|---|
-| `GET /` | 3000 | `Hello World!` |
-| `GET /health/ping` | 3000 | `{"status":"ok"}`, for liveness checks |
-| `GET /metrics` | 9464 | Prometheus metrics. Keep this port private. |
-
-| Environment variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `3000` | Port the app listens on |
-| `SERVICE_NAME` | `service` | Service name in logs and telemetry |
-| `NODE_ENV` | `production` in the image | Sets the environment name in logs |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Collector that receives traces and logs |
-| `DEMO_ROUTES` | Off | Set to `true` to enable the `/demo` routes |
 
 ## Tests
 
@@ -99,6 +60,12 @@ The Terraform tests use a mocked AWS provider, so they need no credentials and c
 ```bash
 terraform init -backend=false
 terraform test
+```
+
+To check the Kubernetes manifests for an environment without a cluster:
+
+```bash
+kubectl kustomize cluster/overlays/development
 ```
 
 The service has no automated tests yet.
