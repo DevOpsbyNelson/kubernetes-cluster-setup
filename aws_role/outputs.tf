@@ -24,8 +24,8 @@ output "ecr_registry" {
 }
 
 output "ecr_repository_urls" {
-  description = "URL of each ECR repository, by repository name."
-  value       = { for name, repo in aws_ecr_repository.this : name => repo.repository_url }
+  description = "URL of each ECR repository, by <environment>/<image>."
+  value       = { for key, repo in aws_ecr_repository.stage : key => repo.repository_url }
 }
 
 output "oidc_provider_arn" {

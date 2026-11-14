@@ -4,9 +4,11 @@ name: Publish and Deploy
 # to the EKS cluster of the branch's environment:
 #   dev -> development, staging -> staging, main -> production.
 #
-# Each image is tagged with the Git tree hash of its folder, so it is rebuilt only when that folder
-# changes, and the same content keeps the same tag on every branch: promoting a commit reuses its
-# images. The deploy job computes the same tags from the commit it deploys.
+# Each environment has its own ECR repositories: <ECR_NAMESPACE>/<environment>/<image>. Each image
+# is tagged with the Git tree hash of its folder, so it is only built when that folder changes. If
+# another environment already has that tag (a promoted commit), the image is copied from there
+# instead of rebuilt, so every environment runs exactly the same image. The deploy job computes the
+# same tags from the commit it deploys.
 on:
   push:
     branches: [dev, staging, main]
@@ -22,7 +24,9 @@ permissions: {}
 env:
   AWS_REGION: us-east-1
   ECR_NAMESPACE: eks-cluster
-  # <image name>=<build context>. The image goes to ECR as <ECR_NAMESPACE>/<image name>.
+  # The environments that have ECR repositories (aws_role/'s github_environments).
+  ENVIRONMENTS: development staging production
+  # <image name>=<build context>. The image goes to ECR as <ECR_NAMESPACE>/<environment>/<image name>.
   COMPONENTS: >-
     service=service
     alertmanager=observability/alertmanager
@@ -47,6 +51,8 @@ jobs:
     concurrency:
       group: publish-images-${{ github.sha }}
       cancel-in-progress: false
+    env:
+      STAGE: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,14 +70,19 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # Tags are immutable, so an image whose tag exists is skipped instead of pushed again.
-      - name: Build and push changed images
+      # Tags are immutable: an image whose tag exists in this environment is skipped, one that exists
+      # in another environment is copied (same image, no rebuild), and only new content is built.
+      - name: Publish images to ${{ env.STAGE }}
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           set -euo pipefail
+          has_tag() { # <repository> <tag>
+            [ "$(aws ecr batch-get-image --repository-name "$1" --image-ids "imageTag=$2" \
+              --query 'length(images)' --output text)" -gt 0 ]
+          }
           {
-            echo "## Images"
+            echo "## Images in $ECR_NAMESPACE/$STAGE"
             echo
             echo "| Image | Tag | Result |"
             echo "|---|---|---|"
@@ -80,23 +91,32 @@ jobs:
           for entry in $COMPONENTS; do
             name="${entry%%=*}"
             context="${entry#*=}"
-            repository="$ECR_NAMESPACE/$name"
+            repository="$ECR_NAMESPACE/$STAGE/$name"
             tag="$(git rev-parse --verify "HEAD:$context")"
 
-            count="$(aws ecr batch-get-image \
-              --repository-name "$repository" \
-              --image-ids "imageTag=$tag" \
-              --query 'length(images)' \
-              --output text)"
-
-            if [ "$count" -gt 0 ]; then
+            source=""
+            if has_tag "$repository" "$tag"; then
               result="already published"
             else
-              echo "::group::Build $name"
-              # Without --provenance=false, attestations show up as extra untagged entries in ECR.
-              docker buildx build --provenance=false --push --tag "$REGISTRY/$repository:$tag" "$context"
-              echo "::endgroup::"
-              result="built and pushed"
+              for other in $ENVIRONMENTS; do
+                [ "$other" != "$STAGE" ] || continue
+                if has_tag "$ECR_NAMESPACE/$other/$name" "$tag"; then
+                  source="$other"
+                  break
+                fi
+              done
+              if [ -n "$source" ]; then
+                # Copies the manifest and layers as they are, so the digest stays the same.
+                docker buildx imagetools create --prefer-index=false \
+                  --tag "$REGISTRY/$repository:$tag" "$REGISTRY/$ECR_NAMESPACE/$source/$name:$tag"
+                result="copied from $source"
+              else
+                echo "::group::Build $name"
+                # Without --provenance=false, attestations show up as extra untagged entries in ECR.
+                docker buildx build --provenance=false --push --tag "$REGISTRY/$repository:$tag" "$context"
+                echo "::endgroup::"
+                result="built and pushed"
+              fi
             fi
             echo "$name: $result ($tag)"
             echo "| \`$name\` | \`$tag\` | $result |" >> "$GITHUB_STEP_SUMMARY"
@@ -221,7 +241,7 @@ jobs:
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
           REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-          # The environment's overlay, with each image pointed at ECR and the tag published for
+          # The environment's overlay, with each image pointed at its ECR repository for this environment and the tag published for
           # this commit (the tree hash of its folder, as in the publish job).
           mkdir -p cluster/.deploy
           {
@@ -235,7 +255,7 @@ jobs:
               context="${entry#*=}"
               tag="$(git rev-parse --verify "HEAD:$context")"
               echo "  - name: $ECR_NAMESPACE/$name"
-              echo "    newName: $REGISTRY/$ECR_NAMESPACE/$name"
+              echo "    newName: $REGISTRY/$ECR_NAMESPACE/$STAGE/$name"
               echo "    newTag: \"$tag\""
             done
           } > cluster/.deploy/kustomization.yaml

@@ -32,7 +32,7 @@ variable "github_repository_id" {
 }
 
 variable "github_environments" {
-  description = "GitHub environments whose jobs may assume the role."
+  description = "GitHub environments whose jobs may assume the roles. Each also gets its own set of ECR repositories."
   type        = list(string)
   default     = ["development", "staging", "production"]
 
@@ -72,7 +72,7 @@ variable "eks_deploy_role_name" {
 }
 
 variable "ecr_namespace" {
-  description = "Prefix of the ECR repository names: <ecr_namespace>/<repository>."
+  description = "Prefix of the ECR repository names: <ecr_namespace>/<environment>/<image>."
   type        = string
   default     = "eks-cluster"
 
@@ -83,7 +83,7 @@ variable "ecr_namespace" {
 }
 
 variable "ecr_repositories" {
-  description = "ECR repositories to create, one per image: service/ and each folder in observability/. The push role can push to these only."
+  description = "Images that get an ECR repository in each environment (<ecr_namespace>/<environment>/<image>): service/ and each folder in observability/. The push role can push to these only."
   type        = list(string)
   default     = ["service", "alertmanager", "alloy", "grafana", "loki", "prometheus", "tempo"]
 

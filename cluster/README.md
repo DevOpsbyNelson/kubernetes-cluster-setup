@@ -68,7 +68,7 @@ Volume sizes only apply when a StatefulSet is first created. To grow an existing
 
 ## How images are set
 
-The manifests use placeholder image names such as `eks-cluster/grafana`. At deploy time, the workflow writes `cluster/.deploy/kustomization.yaml`, which is gitignored. It points each name at ECR with the tag for that commit: the Git tree hash of the image's folder, the same tag the publish job pushed.
+The manifests use placeholder image names such as `eks-cluster/grafana`. At deploy time, the workflow writes `cluster/.deploy/kustomization.yaml`, which is gitignored. It points each name at the ECR repository of the environment being deployed, such as `eks-cluster/production/grafana`, with the tag for that commit: the Git tree hash of the image's folder, the same tag the publish job pushed.
 
 To see the tag for an image at the current commit:
 

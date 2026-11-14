@@ -43,7 +43,7 @@ Each cluster bills by the hour whether or not anything is deployed: roughly $120
 | **Publish and Deploy** ([`publish_and_deploy.yml`](.github/workflows/publish_and_deploy.yml)) | On pushes to `dev`, `staging` or `main` that change `service/`, `observability/` or `cluster/`, or by hand | Builds the seven images, pushes the changed ones to ECR, and deploys `cluster/` |
 | **Tests** ([`tests.yml`](.github/workflows/tests.yml)) | On every push and pull request | Terraform tests, cleanup script tests and manifest render, without AWS credentials |
 
-All workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. Images are tagged with the Git tree hash of their folder: an image is rebuilt only when its folder changes, and promoting a commit to the next branch reuses its images. The [workflows README](.github/workflows/README.md) lists every secret and variable.
+All workflows sign in to AWS through OIDC, so no AWS keys are stored in GitHub. Images are tagged with the Git tree hash of their folder: an image is built only when its folder changes, into the ECR repositories of the branch's environment (`eks-cluster/<environment>/<image>`). Promoting a commit to the next branch copies its images instead of rebuilding them. The [workflows README](.github/workflows/README.md) lists every secret and variable.
 
 ## Service
 

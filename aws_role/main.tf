@@ -64,24 +64,34 @@ data "aws_iam_openid_connect_provider" "github" {
 
 # --- ECR repositories --------------------------------------------------------------------------
 
-# One repository per image: service/ and each folder in observability/. Shared by all stages, so
-# one image can be promoted through them. Immutable tags stop a later push from replacing an image
-# that is already deployed.
-resource "aws_ecr_repository" "this" {
-  for_each = toset(var.ecr_repositories)
+# One repository per environment and image: <namespace>/<environment>/<image>, for service/ and
+# each folder in observability/. The name says which environment an image belongs to; promoting a
+# commit copies its image to the next environment's repository. Immutable tags stop a later push
+# from replacing an image that is already deployed.
+#
+# force_delete lets a destroy remove a repository together with its images: they are all built
+# from Git, so they can be published again.
+resource "aws_ecr_repository" "stage" {
+  for_each = { for pair in setproduct(var.github_environments, var.ecr_repositories) : "${pair[0]}/${pair[1]}" => pair }
 
   name                 = "${var.ecr_namespace}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
   }
 }
 
-# The service repository existed before the observability ones; keep it instead of replacing it.
-moved {
-  from = aws_ecr_repository.service
-  to   = aws_ecr_repository.this["service"]
+# The earlier repositories (<namespace>/<image>, shared by all environments) are no longer managed
+# here. Terraform forgets them without deleting them, because they still hold images: delete them
+# in the ECR console once the per-environment repositories are in use.
+removed {
+  from = aws_ecr_repository.this
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 # --- Role that pushes images -------------------------------------------------------------------
@@ -120,7 +130,7 @@ resource "aws_iam_role_policy" "deploy" {
           "ecr:PutImage",
           "ecr:UploadLayerPart",
         ]
-        Resource = [for repo in aws_ecr_repository.this : repo.arn]
+        Resource = [for repo in aws_ecr_repository.stage : repo.arn]
       },
     ]
   })

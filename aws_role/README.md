@@ -14,7 +14,7 @@ This Terraform creates what the GitHub Actions workflows need in AWS:
 - **Trust:** all three roles trust only this repository's jobs that run in the listed GitHub environments:
   - with GitHub's immutable subject: `repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:<name>`;
   - otherwise: `repo:<owner>/<repo>:environment:<name>`.
-- **ECR repositories:** `<ecr_namespace>/<name>` for `service`, `alertmanager`, `alloy`, `grafana`, `loki`, `prometheus` and `tempo`. They're shared by all stages, scan images on push, and use immutable tags.
+- **ECR repositories:** one set per environment, named `<ecr_namespace>/<environment>/<image>`, for `service`, `alertmanager`, `alloy`, `grafana`, `loki`, `prometheus` and `tempo`. With the defaults that is 21 repositories, such as `eks-cluster/production/grafana`. They scan images on push, use immutable tags, and a destroy deletes them with their images, which can always be built again from Git.
 - **OIDC provider:** set `create_oidc_provider = true` to create it, or `false` to reuse the account's existing one. AWS allows only one per account.
 
 Nothing in this folder is specific to one AWS account: the account comes from the credentials it runs with.
@@ -160,11 +160,11 @@ The rest of the setup, such as creating the clusters and adding the environment 
 
 To move to another AWS account, repeat these steps there: only the secrets and variables change, not the code.
 
-## Updating from the single-repository version
+## Updating from the shared repositories
 
-Earlier versions created only `eks-cluster/service` and the push role. Running `apply` with this version:
-- keeps `eks-cluster/service` and its images. A `moved` block tells Terraform it's the same repository, so check that the plan doesn't replace it;
-- creates the six observability repositories and the two new roles;
+Earlier versions had one repository per image, shared by all environments (`eks-cluster/<image>`). Running `apply` with this version:
+- creates the per-environment repositories (`eks-cluster/<environment>/<image>`), which start empty. The next Publish and Deploy run on each branch fills them;
+- **doesn't delete** the old `eks-cluster/<image>` repositories: a `removed` block makes Terraform forget them, because they still hold images. Check that the plan says they "will no longer be managed" rather than destroyed, then delete them in the ECR console once the new ones are in use;
 - needs `role_name` set to the push role's current name if you changed it, such as `github-actions-ecr-push-prod`. Otherwise the role is replaced and its ARN changes.
 
 ## Tests

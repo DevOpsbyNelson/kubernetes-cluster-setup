@@ -110,8 +110,8 @@ Runs on pushes to these branches that change `service/`, `observability/`, `clus
 | `main` | `production` | `eks-cluster-production` |
 
 **Publish job**
-- **Images:** builds `service/` and each folder in `observability/` (`alertmanager`, `alloy`, `grafana`, `loki`, `prometheus`, `tempo`), and pushes them to `eks-cluster/<name>` in ECR.
-- **Tags:** each tag is the Git tree hash of the image's folder, for example `git rev-parse HEAD:observability/grafana`. An image is only built when that tag doesn't exist yet, so unchanged folders are skipped.
+- **Images:** builds `service/` and each folder in `observability/` (`alertmanager`, `alloy`, `grafana`, `loki`, `prometheus`, `tempo`), and pushes them to the ECR repositories of the branch's environment: `eks-cluster/<environment>/<image>`, for example `eks-cluster/production/grafana`.
+- **Tags:** each tag is the Git tree hash of the image's folder, for example `git rev-parse HEAD:observability/grafana`. If the environment already has that tag, the image is skipped. If another environment has it, for example after promoting a commit from `dev` to `staging`, the image is **copied** from there instead of rebuilt, so both environments run exactly the same image. Only new content is built.
 
 **Deploy job**
 1. Finds the branch's cluster. If it doesn't exist yet, the job warns and stops without failing.
@@ -127,7 +127,7 @@ git merge --ff-only dev
 git push
 ```
 
-Because tags come from folder contents, a merge commit that brings the same folders also reuses the images.
+Because tags come from folder contents, a merge commit that brings the same folders also reuses the images: they are copied to the next environment's repositories, not rebuilt.
 
 ## Troubleshooting
 

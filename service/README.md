@@ -88,7 +88,7 @@ Dependencies are deliberately not bundled, because OpenTelemetry can only patch 
 
 ## Publishing
 
-[Publish and Deploy](../.github/workflows/publish_and_deploy.yml) builds this folder and pushes it to private ECR as `eks-cluster/service`. The tag is the Git tree hash of `service/` (`git rev-parse HEAD:service`), so the image is only rebuilt when something in this folder changes.
+[Publish and Deploy](../.github/workflows/publish_and_deploy.yml) builds this folder and pushes it to the private ECR repository of the branch's environment, such as `eks-cluster/production/service`. The tag is the Git tree hash of `service/` (`git rev-parse HEAD:service`), so the image is only rebuilt when something in this folder changes.
 
 It runs on pushes to `dev`, `staging` or `main`, then deploys the image to that branch's EKS cluster with the manifests in [`cluster/`](../cluster/). There it runs in the `service` namespace and sends telemetry to Alloy. See the [root README](../README.md#github-actions) for how branches map to environments.
 

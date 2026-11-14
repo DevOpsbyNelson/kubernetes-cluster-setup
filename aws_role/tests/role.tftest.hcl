@@ -86,39 +86,56 @@ run "reuses_existing_oidc_provider" {
   }
 }
 
-run "ecr_repositories_are_hardened" {
+run "ecr_repositories_are_per_environment" {
   assert {
-    condition = toset([for repo in aws_ecr_repository.this : repo.name]) == toset([
-      "eks-cluster/alertmanager",
-      "eks-cluster/alloy",
-      "eks-cluster/grafana",
-      "eks-cluster/loki",
-      "eks-cluster/prometheus",
-      "eks-cluster/service",
-      "eks-cluster/tempo",
-    ])
-    error_message = "There must be one repository for the service and each observability image."
+    condition = toset([for repo in aws_ecr_repository.stage : repo.name]) == toset(flatten([
+      for env in ["development", "staging", "production"] : [
+        for image in ["alertmanager", "alloy", "grafana", "loki", "prometheus", "service", "tempo"] :
+        "eks-cluster/${env}/${image}"
+      ]
+    ]))
+    error_message = "Each environment must have its own repository for the service and each observability image: eks-cluster/<environment>/<image>."
   }
 
   assert {
-    condition     = alltrue([for repo in aws_ecr_repository.this : repo.image_tag_mutability == "IMMUTABLE"])
+    condition     = alltrue([for repo in aws_ecr_repository.stage : repo.image_tag_mutability == "IMMUTABLE"])
     error_message = "Image tags must be immutable."
   }
 
   assert {
-    condition     = alltrue([for repo in aws_ecr_repository.this : repo.image_scanning_configuration[0].scan_on_push])
+    condition     = alltrue([for repo in aws_ecr_repository.stage : repo.image_scanning_configuration[0].scan_on_push])
     error_message = "Images must be scanned on push."
   }
 
   assert {
-    condition     = output.ecr_registry == "123456789012.dkr.ecr.us-east-1.amazonaws.com" && length(output.ecr_repository_urls) == 7
-    error_message = "The registry and repository URLs must be exposed."
+    condition     = alltrue([for repo in aws_ecr_repository.stage : repo.force_delete])
+    error_message = "A destroy must be able to remove repositories that still hold images."
+  }
+
+  assert {
+    condition = (
+      output.ecr_registry == "123456789012.dkr.ecr.us-east-1.amazonaws.com" &&
+      length(output.ecr_repository_urls) == 21 &&
+      contains(keys(output.ecr_repository_urls), "production/grafana")
+    )
+    error_message = "The registry and the repository URLs, keyed by <environment>/<image>, must be exposed."
+  }
+}
+
+run "ecr_repositories_follow_environments" {
+  variables {
+    github_environments = ["prod"]
+  }
+
+  assert {
+    condition     = length(aws_ecr_repository.stage) == 7 && alltrue([for repo in aws_ecr_repository.stage : startswith(repo.name, "eks-cluster/prod/")])
+    error_message = "Repositories must be created for the configured environments only."
   }
 }
 
 run "push_policy_is_scoped" {
   assert {
-    condition     = toset(one([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "EcrPush"])) == toset([for repo in aws_ecr_repository.this : repo.arn])
+    condition     = toset(one([for s in jsondecode(aws_iam_role_policy.deploy.policy).Statement : s.Resource if s.Sid == "EcrPush"])) == toset([for repo in aws_ecr_repository.stage : repo.arn])
     error_message = "Push permissions must be limited to this project's repositories."
   }
 
