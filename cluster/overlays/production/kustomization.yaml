@@ -5,6 +5,10 @@ kind: Kustomization
 resources:
   - ../../base
 
+# Image names and tags, written by the Publish and Deploy workflow.
+components:
+  - images
+
 patches:
   # Keep 80% of normal traces; lower it to bound Tempo's storage. Errors and slow traces are always kept.
   - patch: |-

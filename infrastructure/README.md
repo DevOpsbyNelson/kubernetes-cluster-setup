@@ -134,13 +134,13 @@ Set in `var.stages` (`variables.tf`). Override them in a `terraform.tfvars` file
 | VPC range | `10.10.0.0/16` | `10.20.0.0/16` | `10.30.0.0/16` |
 | Instance types | `t3.medium`, `t3a.medium` | `t3.large` | `t3.medium`, `t3a.medium` |
 | Capacity | Spot | On-Demand | Spot |
-| Nodes (min / desired / max) | 1 / 2 / 3 | 2 / 2 / 4 | 1 / 1 / 2 |
+| Nodes (min / desired / max) | 1 / 2 / 3 | 2 / 2 / 4 | 1 / 2 / 3 |
 | Node disk | 20 GiB | 30 GiB | 20 GiB |
 | Control plane log retention | 7 days | 14 days | 7 days |
 | EKS support policy | Standard | Standard | Standard |
 | Deletion protection | off | off | off |
 
-This repository is for practice, so production is sized for cost rather than availability: one Spot node in two zones, with a single NAT gateway. It costs roughly $120 a month, most of it the EKS control plane ($73) and the NAT gateway (about $33). For a real production workload, use several On-Demand nodes across three zones with a NAT gateway in each, and turn deletion protection on.
+This repository is for practice, so production is sized for cost rather than availability: the same small Spot nodes as development (two by default, which Argo CD needs room for), in two zones, with a single NAT gateway. It costs roughly $130 a month, plus about $16 for the public load balancer of `cluster/`, most of it the EKS control plane ($73) and the NAT gateway (about $33). For a real production workload, use several On-Demand nodes across three zones with a NAT gateway in each, and turn deletion protection on.
 
 Resources are named `<project_name>-<stage>`. The `default` workspace isn't a stage: plan and apply stop there with an error.
 

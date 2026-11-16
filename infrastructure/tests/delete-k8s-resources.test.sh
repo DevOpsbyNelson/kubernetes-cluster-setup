@@ -72,6 +72,7 @@ echo "kubectl $*" >> "$CALLS"
 case "$*" in
   "get services"*) printf '%s' "$K8S_LB_SERVICES" ;;
   "get persistentvolumes"*) : ;;
+  "get crd applications.argoproj.io"*) [ "$ARGOCD" = "yes" ] || exit 1 ;;
 esac
 exit 0
 EOF
@@ -83,11 +84,19 @@ EOF
 }
 
 echo "Cluster still running: clean up through Kubernetes, then sweep AWS"
-CLUSTER_STATE=ACTIVE K8S_LB_SERVICES=$'service service-public\nother-ns web-public\n'
-export CLUSTER_STATE K8S_LB_SERVICES
+CLUSTER_STATE=ACTIVE ARGOCD=yes K8S_LB_SERVICES=$'service service-public\nother-ns web-public\n'
+export CLUSTER_STATE ARGOCD K8S_LB_SERVICES
 run_script
 [ "$STATUS" -eq 0 ] && pass "script succeeds" || fail "script failed: $OUTPUT"
 expect_call "connects kubectl to the cluster" '^aws eks update-kubeconfig --name eks-cluster-production'
+expect_call "deletes the Argo CD Applications, with what they manage" '^kubectl delete applications.argoproj.io --all --all-namespaces --wait=true'
+apps_line="$(grep -n '^kubectl delete applications.argoproj.io' "$CALLS" | head -1 | cut -d: -f1)"
+services_line="$(grep -n '^kubectl -n service delete service' "$CALLS" | head -1 | cut -d: -f1)"
+if [ -n "$apps_line" ] && [ -n "$services_line" ] && [ "$apps_line" -lt "$services_line" ]; then
+  pass "deletes the Argo CD Applications before anything Argo CD would recreate"
+else
+  fail "the Argo CD Applications must be deleted before the Services (applications: ${apps_line:-none}, services: ${services_line:-none})"
+fi
 expect_call "deletes the LoadBalancer Service service/service-public and waits" '^kubectl -n service delete service service-public --wait=true'
 expect_call "deletes LoadBalancer Services in other namespaces too" '^kubectl -n other-ns delete service web-public'
 expect_call "deletes all Ingresses" '^kubectl delete ingress --all-namespaces --all --wait=true'
@@ -104,6 +113,15 @@ expect_call "deletes them" '^aws ec2 delete-security-group .*--group-id sg-0123'
 expect_call "only looks for unattached volumes of this cluster" '^aws ec2 describe-volumes .*Name=status,Values=available.*Name=tag:KubernetesCluster,Values=eks-cluster-production'
 expect_call "deletes the first volume" '^aws ec2 delete-volume .*--volume-id vol-aaa'
 expect_call "deletes the second volume" '^aws ec2 delete-volume .*--volume-id vol-bbb'
+rm -rf "$WORK"
+
+echo "Cluster running without Argo CD: no Applications to delete"
+CLUSTER_STATE=ACTIVE ARGOCD=no
+run_script
+[ "$STATUS" -eq 0 ] && pass "script succeeds" || fail "script failed: $OUTPUT"
+expect_no_call "doesn't try to delete Argo CD Applications" '^kubectl delete applications'
+expect_call "still deletes the LoadBalancer Service" '^kubectl -n service delete service service-public'
+ARGOCD=yes
 rm -rf "$WORK"
 
 echo "Cluster already gone (the case that blocked the VPC): skip Kubernetes, still sweep AWS"

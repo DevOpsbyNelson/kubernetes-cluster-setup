@@ -1,8 +1,12 @@
 name: Publish and Deploy
 
-# Builds the service and observability images, pushes them to private ECR, then deploys cluster/
-# to the EKS cluster of the branch's environment:
+# Builds the service and observability images, pushes them to private ECR, and deploys them with
+# GitOps to the EKS cluster of the branch's environment:
 #   dev -> development, staging -> staging, main -> production.
+#   1. publish: builds or copies the images, then commits their tags to
+#      cluster/overlays/<environment>/images on the branch.
+#   2. deploy: applies the Secrets (they don't belong in Git), installs Argo CD if needed and waits
+#      until Argo CD has synced cluster/overlays/<environment> from the branch.
 #
 # Each environment has its own ECR repositories: <ECR_NAMESPACE>/<environment>/<image>. Each image
 # is tagged with the Git tree hash of its folder, so it is only built when that folder changes. If
@@ -12,10 +16,12 @@ name: Publish and Deploy
 on:
   push:
     branches: [dev, staging, main]
+    # Only what needs this workflow: new images, or Argo CD itself. Other changes in cluster/ are
+    # deployed by Argo CD directly from the branch.
     paths:
       - service/**
       - observability/**
-      - cluster/**
+      - cluster/argocd/**
       - .github/workflows/publish_and_deploy.yml
   workflow_dispatch:
 
@@ -43,7 +49,7 @@ jobs:
     if: contains(fromJSON('["refs/heads/dev","refs/heads/staging","refs/heads/main"]'), github.ref)
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # commits the image tags to cluster/overlays/<environment>/images
       id-token: write # allows the OIDC step below to request a short-lived token
     # The roles' trust policy only accepts jobs that run in a listed GitHub environment.
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
@@ -54,9 +60,10 @@ jobs:
     env:
       STAGE: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'development' }}
     steps:
+      # Full history and the job token, so the tag commit can be rebased and pushed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          fetch-depth: 0
 
       - name: Configure AWS credentials (OIDC, ECR push role)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -121,6 +128,49 @@ jobs:
             echo "$name: $result ($tag)"
             echo "| \`$name\` | \`$tag\` | $result |" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # GitOps: Argo CD deploys what is in Git, so the tags just published are committed to this
+      # environment's overlay. Commits pushed with the job token don't start workflows, so this
+      # doesn't loop. If nothing changed (the images were already recorded), nothing is committed.
+      - name: Record the image tags in Git
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          file="cluster/overlays/$STAGE/images/kustomization.yaml"
+          {
+            echo "# Written by the Publish and Deploy workflow: the images this environment runs, tagged with the"
+            echo "# Git tree hash of each image's folder. Argo CD deploys what is committed here; don't edit by hand."
+            echo "apiVersion: kustomize.config.k8s.io/v1alpha1"
+            echo "kind: Component"
+            echo "images:"
+            for entry in $COMPONENTS; do
+              name="${entry%%=*}"
+              context="${entry#*=}"
+              tag="$(git rev-parse --verify "HEAD:$context")"
+              echo "  - name: $ECR_NAMESPACE/$name"
+              echo "    newName: $REGISTRY/$ECR_NAMESPACE/$STAGE/$name"
+              echo "    newTag: \"$tag\""
+            done
+          } > "$file"
+
+          if git diff --quiet -- "$file"; then
+            echo "The image tags in $file are already up to date."
+            exit 0
+          fi
+          git diff -- "$file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$file"
+          git commit -m "[DEPLOY] $STAGE images for ${GITHUB_SHA::7}"
+          # Someone may have pushed meanwhile: rebase on the branch and retry.
+          for attempt in 1 2 3; do
+            git push origin "HEAD:$BRANCH" && break
+            [ "$attempt" -lt 3 ] || exit 1
+            git pull --rebase origin "$BRANCH"
+          done
+          echo "Committed the new image tags to $BRANCH: Argo CD will deploy them."
 
   deploy:
     name: Deploy to EKS
@@ -234,46 +284,55 @@ jobs:
           apply_secret statefulset/alertmanager alertmanager-slack SLACK_WEBHOOK_URL SLACK_ALERTS_CHANNEL
           apply_secret statefulset/grafana grafana GF_SECURITY_ADMIN_PASSWORD GF_AUTH_GITHUB_ENABLED GF_AUTH_GITHUB_CLIENT_ID GF_AUTH_GITHUB_CLIENT_SECRET
 
-      - name: Deploy
+      # Argo CD runs inside each cluster and deploys cluster/overlays/<environment> from Git. This
+      # installs it the first time (and upgrades it when cluster/argocd/install changes) and
+      # registers the environment's Application. Server-side apply: the CRDs are too large otherwise.
+      - name: Install Argo CD and its application
         if: steps.cluster.outputs.exists == 'true'
         run: |
           set -euo pipefail
-          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          kubectl apply --server-side --force-conflicts -k cluster/argocd/install
+          kubectl wait --for condition=established --timeout=2m crd/applications.argoproj.io
+          kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=5m
+          kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=5m
+          kubectl apply -f "cluster/argocd/applications/$STAGE.yaml"
 
-          # The environment's overlay, with each image pointed at its ECR repository for this environment and the tag published for
-          # this commit (the tree hash of its folder, as in the publish job).
-          mkdir -p cluster/.deploy
-          {
-            echo "apiVersion: kustomize.config.k8s.io/v1beta1"
-            echo "kind: Kustomization"
-            echo "resources:"
-            echo "  - ../overlays/$STAGE"
-            echo "images:"
-            for entry in $COMPONENTS; do
-              name="${entry%%=*}"
-              context="${entry#*=}"
-              tag="$(git rev-parse --verify "HEAD:$context")"
-              echo "  - name: $ECR_NAMESPACE/$name"
-              echo "    newName: $REGISTRY/$ECR_NAMESPACE/$STAGE/$name"
-              echo "    newTag: \"$tag\""
-            done
-          } > cluster/.deploy/kustomization.yaml
-          cat cluster/.deploy/kustomization.yaml
+      # Argo CD checks Git every few minutes; ask it to refresh now, then wait until it has deployed
+      # the branch's latest commit (which includes the image tags the publish job just committed).
+      - name: Wait for Argo CD to sync
+        if: steps.cluster.outputs.exists == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          target="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
+          echo "Waiting for Argo CD to deploy $BRANCH at ${target::7}..."
+          kubectl -n argocd annotate application eks-cluster argocd.argoproj.io/refresh=hard --overwrite
+          status() { kubectl -n argocd get application eks-cluster -o jsonpath="$1" 2> /dev/null || true; }
+          for attempt in $(seq 1 60); do
+            revision="$(status '{.status.sync.revision}')"
+            sync="$(status '{.status.sync.status}')"
+            health="$(status '{.status.health.status}')"
+            echo "revision ${revision::7}, sync $sync, health $health"
+            if [ "$revision" = "$target" ] && [ "$sync" = "Synced" ] && [ "$health" = "Healthy" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              kubectl -n argocd get application eks-cluster -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}'
+              echo "::error::Argo CD didn't reach Synced and Healthy for ${target::7} in 20 minutes. Check the application in the Argo CD UI."
+              exit 1
+            fi
+            sleep 20
+          done
 
-          kubectl apply -k cluster/.deploy
-
+          # Pods only read Secrets when they start. Argo CD may undo the restart annotation
+          # (selfHeal), which only means one more restart.
           while read -r workload; do
             if [ -n "$workload" ]; then
               kubectl -n observability rollout restart "$workload"
+              kubectl -n observability rollout status "$workload" --timeout=10m
             fi
           done < "$RUNNER_TEMP/restart"
-
-          for namespace in service observability; do
-            for workload in $(kubectl -n "$namespace" get deployment,statefulset -o name); do
-              kubectl -n "$namespace" rollout status "$workload" --timeout=10m
-            done
-          done
 
       - name: Show pods
         if: always() && steps.cluster.outputs.exists == 'true'
@@ -305,5 +364,7 @@ jobs:
             echo "aws eks update-kubeconfig --region $AWS_REGION --name eks-cluster-$STAGE"
             echo "kubectl -n observability port-forward svc/grafana 3000:3000   # http://localhost:3000"
             echo "kubectl -n service port-forward svc/service 8080:80           # http://localhost:8080"
+            echo "kubectl -n argocd port-forward svc/argocd-server 8443:443     # https://localhost:8443 (Argo CD)"
+            echo "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d   # user: admin"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

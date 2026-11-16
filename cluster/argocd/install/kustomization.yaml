@@ -1,0 +1,13 @@
+# Installs Argo CD in the "argocd" namespace, from the official manifests of a pinned release.
+# Same as `kubectl apply -n argocd -f .../stable/manifests/install.yaml`, but with a fixed version so
+# an upgrade only happens when this file changes. The deploy job applies it with
+# `kubectl apply --server-side --force-conflicts -k cluster/argocd/install`: the CRDs are too large
+# for a client-side apply.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - namespace.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.1/manifests/install.yaml

@@ -91,8 +91,9 @@ variable "stages" {
       log_retention_days  = 14
       deletion_protection = false
     }
-    # Sized for a practice project: the smallest setup that runs the service and the observability
-    # stack, at the lowest cost. One Spot node fits every pod in cluster/; there is no zone redundancy.
+    # Sized for a practice project, with the same nodes as development: the cheapest setup that runs
+    # the service, the observability stack and Argo CD. A t3.medium node holds 17 pods, so two are
+    # needed for the ~22 pods. There is no zone redundancy.
     production = {
       kubernetes_version  = "1.37"
       support_type        = "STANDARD"
@@ -102,8 +103,8 @@ variable "stages" {
       node_instance_types = ["t3.medium", "t3a.medium"]
       node_capacity_type  = "SPOT"
       node_min_size       = 1
-      node_desired_size   = 1
-      node_max_size       = 2
+      node_desired_size   = 2
+      node_max_size       = 3
       node_disk_size_gib  = 20
       log_retention_days  = 7
       deletion_protection = false

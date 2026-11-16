@@ -4,3 +4,7 @@ kind: Kustomization
 
 resources:
   - ../../base
+
+# Image names and tags, written by the Publish and Deploy workflow.
+components:
+  - images

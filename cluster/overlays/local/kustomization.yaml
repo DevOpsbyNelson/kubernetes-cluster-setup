@@ -1,0 +1,70 @@
+# Runs everything on Docker Desktop's Kubernetes, for trying changes on your machine.
+# Deployed by cluster/local.sh, not by Argo CD or the workflows.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Images built on this machine by cluster/local.sh. Docker Desktop's Kubernetes uses the local
+# Docker images directly, so nothing is pulled from ECR.
+images:
+  - name: eks-cluster/service
+    newName: local/service
+    newTag: dev
+  - name: eks-cluster/alertmanager
+    newName: local/alertmanager
+    newTag: dev
+  - name: eks-cluster/alloy
+    newName: local/alloy
+    newTag: dev
+  - name: eks-cluster/grafana
+    newName: local/grafana
+    newTag: dev
+  - name: eks-cluster/loki
+    newName: local/loki
+    newTag: dev
+  - name: eks-cluster/prometheus
+    newName: local/prometheus
+    newTag: dev
+  - name: eks-cluster/tempo
+    newName: local/tempo
+    newTag: dev
+
+patches:
+  # No EBS here: the volumes use Docker Desktop's default storage class (hostpath).
+  - patch: |-
+      $patch: delete
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: gp3
+
+  # Docker Desktop publishes a LoadBalancer Service on localhost. Port 8080 instead of 80, which
+  # is often taken on a laptop. The AWS annotation is meaningless here.
+  - target:
+      kind: Service
+      name: service-public
+    patch: |-
+      - op: replace
+        path: /spec/ports/0/port
+        value: 8080
+      - op: remove
+        path: /metadata/annotations
+
+  # Only the images built by cluster/local.sh exist: never try to pull them.
+  - target:
+      kind: Deployment|StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+
+  # Smaller volumes: they live on the Docker Desktop disk.
+  - target:
+      kind: StatefulSet
+      name: prometheus|loki|tempo
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 2Gi

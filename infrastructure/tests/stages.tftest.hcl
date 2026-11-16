@@ -113,10 +113,10 @@ run "production" {
   assert {
     condition = (
       local.stage_config.node_capacity_type == "SPOT" &&
-      local.stage_config.node_desired_size == 1 &&
+      local.stage_config.node_desired_size == 2 &&
       local.stage_config.support_type == "STANDARD"
     )
-    error_message = "production must run on a single Spot node with standard EKS support."
+    error_message = "production must run on the same small Spot nodes as development (2 by default), with standard EKS support."
   }
 
   assert {

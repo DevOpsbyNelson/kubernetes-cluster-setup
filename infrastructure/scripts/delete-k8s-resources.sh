@@ -8,7 +8,8 @@
 #   - EBS volumes for PersistentVolumeClaims: they outlive the cluster and keep billing.
 #
 # Two passes, so it also works when the cluster is already gone:
-#   1. Through Kubernetes, if the cluster is ACTIVE: delete LoadBalancer Services, Ingresses and the
+#   1. Through Kubernetes, if the cluster is ACTIVE: delete Argo CD Applications (with what they
+#      manage), LoadBalancer Services, Ingresses and the
 #      app namespaces, and wait until AWS has removed what they created.
 #   2. Through the AWS API, always: delete what is still left, found by the tags Kubernetes puts on it
 #      (kubernetes.io/cluster/<cluster> on load balancers, KubernetesCluster=<cluster> on volumes).
@@ -59,6 +60,14 @@ delete_through_kubernetes() {
   fi
 
   aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION" > /dev/null
+
+  # Argo CD would recreate whatever is deleted below (selfHeal), so its Applications go first.
+  # Their resources finalizer makes Argo CD delete everything they manage, load balancers and
+  # namespaces (with their volumes) included, before the Application itself disappears.
+  if kubectl get crd applications.argoproj.io > /dev/null 2>&1; then
+    echo "Deleting Argo CD Applications and everything they manage"
+    kubectl delete applications.argoproj.io --all --all-namespaces --wait=true --timeout=15m
+  fi
 
   # Deleting a LoadBalancer Service or an Ingress waits for its finalizer, which is only removed
   # once AWS has deleted the load balancer.

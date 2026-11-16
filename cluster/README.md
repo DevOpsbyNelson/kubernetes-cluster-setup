@@ -1,6 +1,6 @@
 # Kubernetes configuration
 
-Kustomize manifests that run the service and the observability stack on the EKS clusters created by [`infrastructure/`](../infrastructure/). The [Publish and Deploy](../.github/workflows/publish_and_deploy.yml) workflow applies them.
+Kustomize manifests that run the service and the observability stack on the EKS clusters created by [`infrastructure/`](../infrastructure/). They are deployed with GitOps: [Argo CD](https://argo-cd.readthedocs.io/), running in each cluster, keeps the cluster in sync with this folder on the environment's branch. The [Publish and Deploy](../.github/workflows/publish_and_deploy.yml) workflow publishes the images, commits their tags here, and installs Argo CD. See [GitOps with Argo CD](#gitops-with-argo-cd).
 
 ```
 service namespace                 observability namespace
@@ -24,10 +24,14 @@ cluster/
 │   ├── storageclass.yaml        # gp3, the default storage class
 │   ├── service/service.yaml     # the API
 │   └── observability/           # alloy, tempo, loki, prometheus, alertmanager, grafana
-└── overlays/
-    ├── development/             # deployed from the dev branch
-    ├── staging/                 # deployed from the staging branch
-    └── production/              # deployed from main
+├── overlays/
+│   ├── development/             # deployed from the dev branch
+│   ├── staging/                 # deployed from the staging branch
+│   └── production/              # deployed from main
+│       └── images/              # image names and tags, written by the workflow
+└── argocd/
+    ├── install/                 # Argo CD v3.6.1, from the official manifests
+    └── applications/            # one Application per environment: overlay + branch
 ```
 
 ## What runs
@@ -68,12 +72,38 @@ Volume sizes only apply when a StatefulSet is first created. To grow an existing
 
 ## How images are set
 
-The manifests use placeholder image names such as `eks-cluster/grafana`. At deploy time, the workflow writes `cluster/.deploy/kustomization.yaml`, which is gitignored. It points each name at the ECR repository of the environment being deployed, such as `eks-cluster/production/grafana`, with the tag for that commit: the Git tree hash of the image's folder, the same tag the publish job pushed.
+The base manifests use placeholder image names such as `eks-cluster/grafana`. Each overlay includes a Kustomize component, `overlays/<environment>/images/kustomization.yaml`, that points every name at the environment's ECR repository, such as `eks-cluster/production/grafana`, with its tag: the Git tree hash of the image's folder.
+
+The publish job rewrites that file after publishing and commits it to the branch as `[DEPLOY] <environment> images for <commit>`, only when a tag changed. Argo CD deploys what is committed, so that commit is the deploy. Don't edit the file by hand: the next publish overwrites it.
 
 To see the tag for an image at the current commit:
 
 ```bash
 git rev-parse HEAD:observability/grafana
+```
+
+## GitOps with Argo CD
+
+```
+push to main ──▶ publish job: images to eks-cluster/production/*
+                     └─ commit "[DEPLOY] production images" (overlays/production/images)
+             ──▶ deploy job:  Secrets + install Argo CD + Application (first time)
+                                            │
+Argo CD in eks-cluster-production ◀─────────┘ watches main, syncs cluster/overlays/production
+```
+
+- **What Argo CD deploys:** each cluster runs one Application, `eks-cluster` in the `argocd` namespace, defined in [`argocd/applications/<environment>.yaml`](argocd/applications/). It deploys `cluster/overlays/<environment>` from the environment's branch: `dev`, `staging` or `main`.
+- **Changing what runs:** commit to `cluster/` on the branch. Argo CD applies it within a few minutes, and the deploy job asks it to refresh right away. Files removed from Git are deleted from the cluster (`prune`), and changes made by hand with `kubectl` are undone (`selfHeal`).
+- **Rolling back:** revert the commit, for example the `[DEPLOY]` commit with the image tags, and push. Argo CD deploys the previous state.
+- **Pull before you push:** the workflow commits image tags to the branch, so run `git pull` before pushing your own changes.
+- **What stays out of Git:** the Secrets below. The deploy job creates them; Argo CD doesn't manage them.
+- **Upgrading Argo CD:** change the version in [`argocd/install/kustomization.yaml`](argocd/install/kustomization.yaml). The next deploy applies it.
+
+To open the Argo CD UI:
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8443:443   # https://localhost:8443, accept the self-signed certificate
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d   # user: admin
 ```
 
 ## Secrets

@@ -70,7 +70,8 @@ jobs:
           terraform_version: "1.15.6"
           terraform_wrapper: false # outputs are read with `terraform output -raw`
 
-      # Cluster admins: the EKS deploy role, so the deploy job can apply cluster/, plus anyone in
+      # Cluster admins: the EKS deploy role, so the deploy job can install Argo CD and apply the
+      # Secrets, plus anyone in
       # EKS_ADMIN_PRINCIPAL_ARNS (comma-separated), e.g. your own IAM user to use kubectl. The
       # infrastructure role is left out: it creates the cluster, so EKS already makes it an admin.
       - name: Check settings
@@ -163,7 +164,7 @@ jobs:
             echo
             echo '```'
             echo
-            echo "Push to the environment's branch, or run **Publish and Deploy**, to deploy cluster/ to it."
+            echo "Run **Publish and Deploy** on the environment's branch: it installs Argo CD, which then deploys cluster/ from that branch."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean up

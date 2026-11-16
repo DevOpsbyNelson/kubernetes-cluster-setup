@@ -70,3 +70,20 @@ jobs:
             kubectl kustomize "cluster/overlays/$env" > /dev/null
             echo "$env renders"
           done
+
+      - name: Render the Argo CD install
+        run: kubectl kustomize cluster/argocd/install > /dev/null && echo "Argo CD install renders"
+
+      # Each environment's Application must deploy its own overlay from its own branch.
+      - name: Check the Argo CD applications
+        run: |
+          set -euo pipefail
+          for pair in development:dev staging:staging production:main; do
+            env="${pair%%:*}"
+            branch="${pair#*:}"
+            app="cluster/argocd/applications/$env.yaml"
+            grep -q "path: cluster/overlays/$env$" "$app" || { echo "::error::$app must deploy cluster/overlays/$env"; exit 1; }
+            grep -q "targetRevision: $branch$" "$app" || { echo "::error::$app must follow the $branch branch"; exit 1; }
+            grep -q "resources-finalizer.argocd.argoproj.io" "$app" || { echo "::error::$app needs the resources finalizer, so a destroy deletes what it manages"; exit 1; }
+            echo "$app: overlay $env, branch $branch"
+          done

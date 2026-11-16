@@ -1,0 +1,26 @@
+# Written by the Publish and Deploy workflow: the images this environment runs, tagged with the
+# Git tree hash of each image's folder. Argo CD deploys what is committed here; don't edit by hand.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+images:
+  - name: eks-cluster/service
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/service
+    newTag: "febc91c39a7b8d2792a2145c9172d85321773744"
+  - name: eks-cluster/alertmanager
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/alertmanager
+    newTag: "7dde4cddf7f0adcc884b91d4f73754b157ed22be"
+  - name: eks-cluster/alloy
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/alloy
+    newTag: "4036701585074bf408e6376c6a9cd87019399a03"
+  - name: eks-cluster/grafana
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/grafana
+    newTag: "3595816f3923d7f3fb49f386db432eb0b2805823"
+  - name: eks-cluster/loki
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/loki
+    newTag: "45686c86accfee72098987088cd12bd5d9c972ae"
+  - name: eks-cluster/prometheus
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/prometheus
+    newTag: "92d7daf132caab63fa4904cb7736f67bd6e17910"
+  - name: eks-cluster/tempo
+    newName: 780031112429.dkr.ecr.us-east-1.amazonaws.com/eks-cluster/staging/tempo
+    newTag: "5707e58ee8b9919c9b1798fb91a659ca5ce0e941"

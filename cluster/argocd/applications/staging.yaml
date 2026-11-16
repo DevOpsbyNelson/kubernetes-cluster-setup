@@ -1,0 +1,31 @@
+# The Argo CD Application for the staging cluster (eks-cluster-staging). Argo CD keeps the cluster in
+# sync with cluster/overlays/staging on the staging branch: it applies every change pushed there,
+# deletes what is removed from Git (prune) and undoes manual changes (selfHeal).
+# The deploy job applies this file once Argo CD is installed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eks-cluster
+  namespace: argocd
+  # Deleting the Application deletes everything it manages, including the load balancer and the
+  # volumes. infrastructure/scripts/delete-k8s-resources.sh relies on this before a destroy.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/DevOpsbyNelson/kubernetes-cluster-setup.git
+    targetRevision: staging
+    path: cluster/overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

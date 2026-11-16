@@ -4,7 +4,7 @@
 |---|---|---|---|
 | **Create Deploy Role** | [`create_role.yml`](create_role.yml) | By hand | Creates the ECR repositories and the IAM roles the other workflows use ([`aws_role/`](../../aws_role/)) |
 | **Infrastructure** | [`infrastructure.yml`](infrastructure.yml) | By hand, from `main` | Creates, changes or destroys one environment's VPC and EKS cluster ([`infrastructure/`](../../infrastructure/)) |
-| **Publish and Deploy** | [`publish_and_deploy.yml`](publish_and_deploy.yml) | On push, or by hand | Builds and pushes the images, then deploys [`cluster/`](../../cluster/) to the branch's cluster |
+| **Publish and Deploy** | [`publish_and_deploy.yml`](publish_and_deploy.yml) | On push, or by hand | Builds and pushes the images, commits their tags, and installs Argo CD, which deploys [`cluster/`](../../cluster/) to the branch's cluster |
 | **Tests** | [`tests.yml`](tests.yml) | On every push and pull request | Terraform tests, the cleanup script tests and the manifest render. Needs no AWS credentials. |
 
 All of them sign in to AWS through OIDC, so no AWS keys are stored in GitHub.
@@ -101,7 +101,7 @@ Before a `destroy`, the workflow runs [`delete-k8s-resources.sh`](../../infrastr
 
 ## Publish and Deploy
 
-Runs on pushes to these branches that change `service/`, `observability/`, `cluster/` or the workflow file. You can also start it by hand on one of them.
+Runs on pushes to these branches that change `service/`, `observability/`, `cluster/argocd/` or the workflow file. Other changes in `cluster/` don't need it: Argo CD deploys them directly from the branch. You can also start it by hand on one of them.
 
 | Branch | GitHub environment | Cluster |
 |---|---|---|
@@ -113,11 +113,13 @@ Runs on pushes to these branches that change `service/`, `observability/`, `clus
 - **Images:** builds `service/` and each folder in `observability/` (`alertmanager`, `alloy`, `grafana`, `loki`, `prometheus`, `tempo`), and pushes them to the ECR repositories of the branch's environment: `eks-cluster/<environment>/<image>`, for example `eks-cluster/production/grafana`.
 - **Tags:** each tag is the Git tree hash of the image's folder, for example `git rev-parse HEAD:observability/grafana`. If the environment already has that tag, the image is skipped. If another environment has it, for example after promoting a commit from `dev` to `staging`, the image is **copied** from there instead of rebuilt, so both environments run exactly the same image. Only new content is built.
 
-**Deploy job**
+- **GitOps:** writes the tags to `cluster/overlays/<environment>/images/kustomization.yaml` and commits them to the branch as `[DEPLOY] <environment> images for <commit>`, only when a tag changed. Commits made with the job token don't start workflows, so this doesn't loop. Run `git pull` before pushing your own changes.
+
+**Deploy job** (GitOps: Argo CD does the deploying, see [`cluster/README.md`](../../cluster/README.md#gitops-with-argo-cd))
 1. Finds the branch's cluster. If it doesn't exist yet, the job warns and stops without failing.
-2. Applies the Kubernetes secrets from the environment.
-3. Applies the environment's overlay from `cluster/`, with the image tags for this commit.
-4. Waits for every workload to be ready.
+2. Applies the Kubernetes secrets from the environment. They don't belong in Git, so Argo CD doesn't manage them.
+3. Installs Argo CD from `cluster/argocd/install` the first time, or upgrades it when that version changes, and applies the environment's Application.
+4. Asks Argo CD to refresh, then waits up to 20 minutes until it has synced the branch's latest commit and the application is healthy.
 
 To promote the same images, fast-forward the next branch:
 
