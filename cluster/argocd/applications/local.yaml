@@ -1,0 +1,31 @@
+# The Argo CD Application for a local cluster (Docker Desktop or minikube), applied by
+# `cluster/local.sh argocd`. It deploys cluster/overlays/local from GitHub, not from your disk: push a
+# change before Argo CD can deploy it. local.sh replaces targetRevision with the branch to follow
+# (LOCAL_ARGOCD_BRANCH, default: your current branch). The workflows never apply this file.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # Same name as on EKS, so the same commands check it everywhere.
+  name: eks-cluster
+  namespace: argocd
+  # Deleting the Application deletes everything it manages. `cluster/local.sh down` relies on this.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/DevOpsbyNelson/kubernetes-cluster-setup.git
+    targetRevision: main
+    path: cluster/overlays/local
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

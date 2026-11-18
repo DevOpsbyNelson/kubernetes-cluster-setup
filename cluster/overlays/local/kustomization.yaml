@@ -1,13 +1,14 @@
-# Runs everything on Docker Desktop's Kubernetes, for trying changes on your machine.
-# Deployed by cluster/local.sh, not by Argo CD or the workflows.
+# Runs everything on a local Kubernetes (Docker Desktop or minikube), for trying changes on your machine.
+# Deployed by cluster/local.sh: directly with kubectl (`up`), or by a local Argo CD (`argocd`).
+# Never by the workflows.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../base
 
-# Images built on this machine by cluster/local.sh. Docker Desktop's Kubernetes uses the local
-# Docker images directly, so nothing is pulled from ECR.
+# Images built on this machine by cluster/local.sh (and loaded into minikube's runtime when
+# deploying there), so nothing is pulled from ECR.
 images:
   - name: eks-cluster/service
     newName: local/service
@@ -32,7 +33,8 @@ images:
     newTag: dev
 
 patches:
-  # No EBS here: the volumes use Docker Desktop's default storage class (hostpath).
+  # No EBS here: the volumes use the cluster's default storage class (hostpath on Docker Desktop,
+# standard on minikube).
   - patch: |-
       $patch: delete
       apiVersion: storage.k8s.io/v1
@@ -40,8 +42,8 @@ patches:
       metadata:
         name: gp3
 
-  # Docker Desktop publishes a LoadBalancer Service on localhost. Port 8080 instead of 80, which
-  # is often taken on a laptop. The AWS annotation is meaningless here.
+  # Docker Desktop publishes a LoadBalancer Service on localhost (minikube needs `minikube tunnel`).
+  # Port 8080 instead of 80, which is often taken on a laptop. The AWS annotation is meaningless here.
   - target:
       kind: Service
       name: service-public
@@ -60,7 +62,7 @@ patches:
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: Never
 
-  # Smaller volumes: they live on the Docker Desktop disk.
+  # Smaller volumes: they live on your machine's disk.
   - target:
       kind: StatefulSet
       name: prometheus|loki|tempo

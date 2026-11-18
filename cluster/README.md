@@ -27,11 +27,14 @@ cluster/
 ├── overlays/
 │   ├── development/             # deployed from the dev branch
 │   ├── staging/                 # deployed from the staging branch
-│   └── production/              # deployed from main
-│       └── images/              # image names and tags, written by the workflow
+│   ├── production/              # deployed from main
+│   │   └── images/              # image names and tags, written by the workflow
+│   └── local/                   # your machine (Docker Desktop or minikube), deployed by local.sh
+├── local.sh                     # build the images and deploy overlays/local
 └── argocd/
     ├── install/                 # Argo CD v3.6.1, from the official manifests
     └── applications/            # one Application per environment: overlay + branch
+                                 # (local.yaml: only for local.sh argocd)
 ```
 
 ## What runs
@@ -131,6 +134,92 @@ kubectl -n observability port-forward svc/grafana 3000:3000   # http://localhost
 kubectl -n service port-forward svc/service 8080:80           # http://localhost:8080
 kubectl -n observability port-forward svc/prometheus 9090:9090
 ```
+
+## Run locally
+
+[`local.sh`](local.sh) runs the service and the whole observability stack on your machine, on Docker Desktop's Kubernetes or on minikube. It builds the seven images with Docker, creates placeholder Secrets, and applies [`overlays/local`](overlays/local/kustomization.yaml). Argo CD and AWS aren't involved: nothing is pulled from ECR and no load balancer or EBS volume is created.
+
+### Before you start
+
+| | Docker Desktop | minikube |
+|---|---|---|
+| Install | Docker Desktop, with Settings → Kubernetes → Enable Kubernetes | [minikube](https://minikube.sigs.k8s.io/docs/start/) and Docker (Docker Engine on Linux) |
+| Start the cluster | Wait until Kubernetes shows as running | `minikube start --cpus 4 --memory 8g` |
+| kubectl context | `docker-desktop` | `minikube` (or the profile name) |
+| Images | Used straight from Docker | Copied in with `minikube image load` |
+| Storage class | `hostpath` | `standard` |
+
+The stack needs about 4 CPUs and 6 to 8 GB of memory. The script uses `kubectl` if it's installed, and `minikube kubectl --` otherwise, so an alias such as `alias kubectl="minikube kubectl --"` is enough. Scripts don't see shell aliases, which is why the script has this fallback.
+
+It picks the `docker-desktop` context if it exists and `minikube` otherwise. To choose explicitly, for example a second minikube profile, set `LOCAL_CONTEXT`. Every command names that context, so the script can't touch an EKS cluster whatever your current context is.
+
+### Deploy, check, delete
+
+From the repository root:
+
+```bash
+cluster/local.sh up       # build the images, deploy, wait for every pod (the first build takes a few minutes)
+cluster/local.sh argocd   # the same, but Argo CD deploys the manifests from GitHub: see below
+cluster/local.sh status   # pods, and how to reach the app and Grafana
+cluster/local.sh down     # delete both namespaces, volumes included, and Argo CD if installed
+
+LOCAL_CONTEXT=minikube cluster/local.sh up   # force a context
+```
+
+Run `up` again after you change `service/` or `observability/`: it rebuilds the images and restarts the pods. They keep the tag `dev`, so the restart is what picks up the new image.
+
+Optional variables for `up`:
+
+| Variable | Default | Used for |
+|---|---|---|
+| `GRAFANA_ADMIN_PASSWORD` | `admin` | Grafana's `admin` user, on the first start only |
+| `ARGOCD_ADMIN_PASSWORD` | `admin` | Argo CD's `admin` user, for `argocd` only. Set on every run, which signs out open sessions. |
+| `LOCAL_ARGOCD_BRANCH` | Your current branch | The branch Argo CD deploys from, for `argocd` only |
+| `SLACK_WEBHOOK_URL`, `SLACK_ALERTS_CHANNEL` | A placeholder | Alertmanager. Locally, alerts aren't delivered anywhere unless you set a real webhook. |
+
+### Open the apps
+
+| | Docker Desktop | minikube |
+|---|---|---|
+| The app | http://localhost:8080/health/ping (`service-public` is published on localhost) | `kubectl -n service port-forward svc/service 8080:80`, then http://localhost:8080/health/ping. Or run `minikube tunnel` in another terminal to give `service-public` an external IP. |
+| Grafana | `kubectl -n observability port-forward svc/grafana 3000:3000`, then http://localhost:3000 (user `admin`) | Same |
+| Prometheus | `kubectl -n observability port-forward svc/prometheus 9090:9090` | Same |
+
+### With Argo CD (GitOps, like the EKS clusters)
+
+`up` applies the manifests from your disk, which is fastest for trying changes. `cluster/local.sh argocd` works like the EKS clusters instead:
+1. It builds and loads the images, and creates the Secrets, the same way `up` does.
+2. It installs Argo CD, the same pinned version as [`argocd/install`](argocd/install/kustomization.yaml).
+3. It registers [`argocd/applications/local.yaml`](argocd/applications/local.yaml), which deploys `cluster/overlays/local` with `prune` and `selfHeal`.
+4. It waits until Argo CD reports `Synced` and `Healthy` for the branch's latest commit.
+
+Things that work differently once Argo CD is installed:
+- **Argo CD reads GitHub, not your disk.** It follows your current branch, which must be pushed. Set `LOCAL_ARGOCD_BRANCH` to choose another branch. Commit and push a manifest change before Argo CD can deploy it. If you change something with `kubectl`, Argo CD undoes it.
+- **Images are still built on your machine.** Argo CD only deploys manifests. After you change `service/` or `observability/`, run `cluster/local.sh up`: it rebuilds and restarts the pods, and it skips `kubectl apply` because Argo CD manages the cluster.
+- **Argo CD adds about 1 GB of memory** to what the stack needs.
+- **On minikube, the app shows `HEALTH STATUS Progressing`** with the message `Caused by Service:service/service-public`. Argo CD only counts a LoadBalancer Service as healthy once it has an external IP, and minikube gives one only while `minikube tunnel` runs. Start `minikube tunnel` in another terminal and the app turns `Healthy`. `local.sh` accepts this one exception and still requires everything else to be healthy.
+- **`down` removes Argo CD too.** It deletes the Application first, so Argo CD can't recreate what is being deleted.
+
+Check it the same way as on EKS:
+
+```bash
+kubectl -n argocd get applications.argoproj.io eks-cluster    # SYNC STATUS Synced, HEALTH STATUS Healthy
+kubectl -n argocd port-forward svc/argocd-server 8443:443      # https://localhost:8443
+```
+
+Sign in with user `admin` and the password from `ARGOCD_ADMIN_PASSWORD`, or `admin` if you didn't set it. The script replaces the random password Argo CD generates and deletes `argocd-initial-admin-secret`. On EKS, nothing changes: the password is still the random one in that Secret.
+
+### How the local overlay differs
+
+- **Images:** `local/<name>:dev`, built on your machine, with `imagePullPolicy: Never`.
+- **Storage:** no `gp3` storage class. Volumes use the cluster's default class and are 2Gi.
+- **`service-public`:** port 8080 instead of 80, without the AWS load balancer annotation.
+
+### When something goes wrong
+
+- **`ErrImageNeverPull`:** the image isn't in the cluster's runtime. Run `cluster/local.sh up` again. On minikube, `minikube image ls | grep local/` lists what was loaded.
+- **Pods `Pending`:** usually not enough CPU or memory. Check with `kubectl describe pod`, and on minikube recreate the cluster with more resources: `minikube delete && minikube start --cpus 4 --memory 8g`.
+- **`no 'minikube' kubectl context`:** minikube isn't started, or uses another profile. Run `minikube start`, or set `LOCAL_CONTEXT`.
 
 ## Render locally
 
